@@ -1,0 +1,8 @@
+# Windows 전용 도구다. 작업 트리의 줄바꿈을 CRLF로 고정한다.
+# .cmd는 LF만 있으면 cmd.exe가 다르게 읽는 경우가 있다.
+* text=auto eol=crlf
+
+# 글꼴과 아이콘은 줄바꿈 변환이 닿으면 깨진다.
+*.woff2 binary
+*.ico   binary
+*.png   binary

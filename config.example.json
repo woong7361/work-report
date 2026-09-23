@@ -1,0 +1,29 @@
+{
+  "author": "",
+  "agent": "claude",
+  "notify": true,
+  "submit_url": "",
+  "submit_label": "제출하러 가기",
+  "claude_bin": "",
+  "codex_bin": "",
+  "python_bin": "",
+  "mine_only": true,
+  "redact": true,
+  "custom_format": false,
+  "custom_rules": false,
+  "backfill_days": 2,
+  "retain_months": 0,
+  "utc_offset_hours": null,
+  "exclude_paths": [
+    "node_modules",
+    "\\scratchpad",
+    "\\Temp\\"
+  ],
+  "exclude_repos": [],
+  "max_prompt_chars": 600,
+  "max_prompts_per_session": 40,
+  "weekly": {
+    "end_day": "Wednesday",
+    "span_days": 7
+  }
+}
