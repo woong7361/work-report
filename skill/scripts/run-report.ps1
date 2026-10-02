@@ -101,7 +101,24 @@ function Invoke-Report {
     if ($fmt) { $ask += " Report format: `"$fmt`"." }
     if ($rules) { $ask += " Writing rules: `"$rules`"." }
     if ($samples) { $ask += " My past reports (style examples only, never a source of content): `"$samples`"." }
-    if ($fmt -or $rules -or $samples) { $ask += ' Read those files first and follow them exactly.' }
+    # Counted facts about how the person has filled the submission form before.
+    # Written by pms.ps1 -Fetch; absent until that has run, and absent for anyone
+    # who does not use the form. Passed only when it exists, like the files above.
+    # The issue list changes between runs, so it is refreshed here rather than
+    # read from whatever was left over. No token means no list, and the report
+    # is written without issue links - which is what people who do not use them
+    # get anyway. A failure here must not stop the report.
+    $issues = Join-Path $root 'pms\open-issues.md'
+    if ($cfg.pms -and $cfg.pms.token) {
+        try { & (Join-Path $PSScriptRoot 'pms.ps1') -Issues -Root $root | Out-Null }
+        catch { Log "  issues: $($_.Exception.Message)" }
+    }
+    if (Test-Path $issues) { $ask += " Issues I can link: `"$issues`"." } else { $issues = $null }
+
+    $patterns = Join-Path $root 'pms\patterns.md'
+    if (Test-Path $patterns) { $ask += " How I have filled it before (counted, not rules): `"$patterns`"." }
+    else { $patterns = $null }
+    if ($fmt -or $rules -or $samples -or $patterns -or $issues) { $ask += ' Read those files first and follow them exactly.' }
 
     # The skill may be installed under another name to avoid a clash, so take
     # the name from the folder this script sits in rather than assuming it.
@@ -185,6 +202,16 @@ function Invoke-Report {
     Log "exit=$code written=$written -> $expected"
 
     if ($code -eq 0 -and $written) {
+        # The agent is told to check the submission section itself. This is the
+        # second pair of eyes: a fence or an indent that slipped through would
+        # otherwise be found only after it had been pasted into the form.
+        # pms.ps1, not pms.py: the interpreter name differs per machine and the
+        # wrapper is the one place that knows how to find it.
+        try {
+            $check = & (Join-Path $PSScriptRoot 'pms.ps1') -Validate $expected -Root $root 2>&1
+            if ($LASTEXITCODE -ne 0) { foreach ($line in $check) { Log "  submission: $line" } }
+        }
+        catch { Log "  submission: check failed - $($_.Exception.Message)" }
         Notify -State 'done' -Detail $expected -RangeText $rangeText
         return $true
     }

@@ -197,6 +197,29 @@ catch {
     }
 }
 Ok "python $($py.Version) ($($py.Exe) $($py.Pre -join ' '))"
+
+# playwright: used only by the PMS form filler, which is off until someone fills
+# in the address. Installed here anyway, because the alternative is that the
+# first person to press the button gets told to open a terminal. A failure is
+# not fatal - the feature reports what is missing and still opens the form.
+$pwCheck = & $py.Exe @($py.Pre + @('-c', 'import importlib.util as u; print(1 if u.find_spec(''playwright'') else 0)')) 2>$null
+if ("$pwCheck".Trim() -eq '1') {
+    Ok 'playwright already installed'
+}
+else {
+    Note (Say 'pw_installing' 'Installing playwright (for filling the PMS form)...')
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $py.Exe @($py.Pre + @('-m', 'pip', 'install', '--disable-pip-version-check', '-q', 'playwright')) 2>&1 |
+            Select-Object -Last 3 | ForEach-Object { if ("$_".Trim()) { Note "$_" } }
+    }
+    catch { Note $_.Exception.Message }
+    finally { $ErrorActionPreference = $prevEAP }
+    $pwCheck = & $py.Exe @($py.Pre + @('-c', 'import importlib.util as u; print(1 if u.find_spec(''playwright'') else 0)')) 2>$null
+    if ("$pwCheck".Trim() -eq '1') { Ok (Say 'pw_ok' 'playwright installed') }
+    else { Note (Say 'pw_skip' 'playwright not installed - the PMS form filler stays off until it is') }
+}
 # Nothing asked for and nothing installed: offer the default agent rather than
 # telling someone to go and find a CLI themselves.
 if (-not $Agents) {
@@ -324,6 +347,11 @@ $defaults = [ordered]@{
 }
 foreach ($k in $defaults.Keys) { if (-not $cfg.Contains($k)) { $cfg[$k] = $defaults[$k] } }
 if (-not $cfg.Contains('weekly')) { $cfg['weekly'] = [ordered]@{ end_day = $WeeklyDay; span_days = 7 } }
+# The PMS form filler is optional and off until someone fills in the address.
+# The keys are created empty so the settings screen has somewhere to write.
+if (-not $cfg.Contains('pms')) {
+    $cfg['pms'] = [ordered]@{ url = ''; project = ''; projects = @(); port = 9333; profile = ''; chrome_bin = '' }
+}
 
 foreach ($a in @('claude', 'codex')) {
     if (-not $homes[$a]) { continue }

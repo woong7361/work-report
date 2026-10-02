@@ -26,5 +26,12 @@
   "weekly": {
     "end_day": "Wednesday",
     "span_days": 7
+  },
+  "pms": {
+    "url": "",
+    "project": "",
+    "port": 9333,
+    "profile": "",
+    "projects": []
   }
 }

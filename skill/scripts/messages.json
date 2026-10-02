@@ -50,6 +50,9 @@
     "skipped_label": "설치 안 함",
     "first_run_offer": "지금 오늘치 보고서를 한 번 만들어 볼까요? 몇 분 걸립니다 [Y/n]",
     "first_run_going": "보고서를 만드는 중입니다. 끝나면 알림이 뜹니다...",
-    "opening": "앱을 여는 중입니다..."
+    "opening": "앱을 여는 중입니다...",
+    "pw_installing": "PMS 일일보고 폼을 채우는 데 쓰는 playwright를 설치합니다...",
+    "pw_ok": "playwright 설치 완료",
+    "pw_skip": "playwright를 설치하지 못했습니다. PMS 폼 채우기는 그때까지 꺼져 있습니다"
   }
 }
