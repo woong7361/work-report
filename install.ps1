@@ -319,7 +319,7 @@ $defaults = [ordered]@{
     agent = $Agents[0]; notify = $true; submit_url = ''; submit_label = ''
     claude_bin = ''; codex_bin = ''; python_bin = ''
     mine_only = $true; redact = $true; backfill_days = 2; retain_months = 0
-    custom_format = $false; custom_rules = $false
+    custom_format = $false; custom_rules = $false; custom_samples = $false
     exclude_paths = @('node_modules', '\scratchpad', '\Temp\'); exclude_repos = @()
 }
 foreach ($k in $defaults.Keys) { if (-not $cfg.Contains($k)) { $cfg[$k] = $defaults[$k] } }
@@ -336,9 +336,39 @@ Ok $(if ($created) { "config.json created (author: $($cfg.author))" } else { 'co
 
 # ---------------------------------------------------------------- 3. skill
 Step 3 'Installing the skill'
+# A viewer left running would keep serving the version it started with, so an
+# update would appear not to have happened. It also holds the files being
+# replaced. Closing it costs nothing: the app reopens at the end.
+if (Stop-Viewer -Root $root) { Note 'closed the running app so the new version is the one that opens' }
 $installed = @{}
 $skillDirs = @()
 $skipped = @()
+
+# -Copy means "do not depend on the folder this was unpacked in". Copying into
+# every agent's skills folder would do that, but it leaves one independent copy
+# per agent: editing one changes nothing for the others, and a run that fails
+# halfway leaves them on different versions. So the files are staged once, in a
+# place this tool owns, and every agent gets a link to that. One copy, one
+# version, and the unpacked folder is still free to go.
+# The staged folder is named after the skill, not 'skill': the runner takes the
+# skill name from the folder it sits in, and would otherwise call itself 'skill'.
+$linkSrc = $skillSrc
+$stage = Join-Path (Join-Path $env:LOCALAPPDATA 'work-report\skills') $SkillName
+if ($Copy) {
+    $stageParent = Split-Path -Parent $stage
+    if (-not (Test-Path $stageParent)) { New-Item -ItemType Directory -Path $stageParent -Force | Out-Null }
+    if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+    Copy-Item $skillSrc $stage -Recurse -Force
+    $linkSrc = $stage
+    Ok "files: $stage"
+}
+elseif (Test-Path (Join-Path $stage 'scripts\collect.py')) {
+    # Installing linked after a -Copy install: every link is about to point at
+    # the unpacked folder instead, so the staged copy would sit there with
+    # nothing referring to it and quietly go stale.
+    Remove-Item $stage -Recurse -Force
+    Note "removed the earlier copy: $stage"
+}
 foreach ($a in $Agents) {
     foreach ($agentHome in $homes[$a]) {
     $skillsDir = Join-Path $agentHome 'skills'
@@ -376,18 +406,21 @@ foreach ($a in $Agents) {
         if ($item.LinkType) { $item.Delete() } else { Remove-Item $target -Recurse -Force }
     }
 
+    # A link is right either way: to the unpacked folder without -Copy, to the
+    # staged copy with it. Only a filesystem that refuses junctions falls back.
     $linked = $false
-    if (-not $Copy) {
-        try {
-            New-Item -ItemType Junction -Path $target -Value $skillSrc -ErrorAction Stop | Out-Null
-            $linked = $true
-        }
-        catch { Note 'junction not available, falling back to copy' }
+    try {
+        New-Item -ItemType Junction -Path $target -Value $linkSrc -ErrorAction Stop | Out-Null
+        $linked = $true
     }
-    if (-not $linked) { Copy-Item $skillSrc $target -Recurse -Force }
+    catch { Note 'junction not available, falling back to copy' }
+    if (-not $linked) { Copy-Item $linkSrc $target -Recurse -Force }
     if (-not $installed.ContainsKey($a)) { $installed[$a] = $target }
     $skillDirs += $target
-    Ok ("{0}: {1} ({2})" -f $a, $target, $(if ($linked) { 'linked - keep this folder' } else { 'copied - re-run install.ps1 to update' }))
+    $how = if (-not $linked) { 'copied - re-run install.ps1 to update' }
+    elseif ($Copy) { 'linked to the staged copy' }
+    else { 'linked - keep this folder' }
+    Ok ("{0}: {1} ({2})" -f $a, $target, $how)
     }
 }
 # An agent whose every location was skipped cannot run the skill, so it must not

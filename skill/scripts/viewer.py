@@ -31,7 +31,8 @@ AREAS = (('daily', '일일 보고'), ('weekly', '주간 보고'),
 
 # 보고 폴더의 custom\ 에 두면 보고서 양식과 문체를 바꾼다. 업데이트가 덮어쓰지 않는다.
 CUSTOM = (('report-format.md', '보고서 양식', 'custom_format'),
-          ('writing-rules.md', '글쓰기 문체', 'custom_rules'))
+          ('writing-rules.md', '글쓰기 문체', 'custom_rules'),
+          ('my-reports.md', '내 보고서', 'custom_samples'))
 
 EMPTY_DOC = ('# 아직 보고서가 없습니다' + chr(10) + chr(10) +
              '위의 **일일보고 만들기** 를 눌러 보세요.')
@@ -237,9 +238,18 @@ def resolve_bins(root):
 
 
 def start_job(root, mode):
-    """러너를 띄운다. 모드는 둘 중 하나로 고정한다."""
+    """러너를 띄운다. 모드는 둘 중 하나로 고정한다.
+
+    이미 도는 것이 있으면 그 작업을 돌려준다. 러너는 한 번에 하나만 돌도록
+    잠금을 걸어 두었으므로, 두 번째를 띄워도 아무것도 쓰지 않고 물러난다.
+    단추를 연타하면 그 물러난 실행이 화면에 카드로 남는다.
+    """
     if mode not in ('daily', 'weekly'):
         return None
+    with jobs_lock:
+        for job in jobs.values():
+            if job['mode'] == mode and job['state'] == 'running' and job['proc'].poll() is None:
+                return job['id']
     runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run-report.ps1')
     started = time.time()
     proc = subprocess.Popen(
@@ -254,6 +264,20 @@ def start_job(root, mode):
     return job_id
 
 
+def drop_job(job_id):
+    """닫은 작업을 목록에서 뺀다.
+
+    화면에서만 지우면 다음 폴링이 서버 목록을 보고 카드를 다시 만든다.
+    도는 중인 작업은 닫지 않는다 - 지켜볼 것이 남아 있다.
+    """
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job or job['state'] == 'running':
+            return False
+        del jobs[job_id]
+        return True
+
+
 def job_status(root):
     out = []
     with jobs_lock:
@@ -262,7 +286,12 @@ def job_status(root):
                 code = job['proc'].poll()
                 if code is not None:
                     made = newest_under(root, job['mode'], job['started'])
-                    job['state'] = 'done' if (code == 0 and made) else 'failed'
+                    # 2는 러너가 "다른 실행이 도는 중이라 물러났다"고 말하는 값이다.
+                    # 쓴 것이 없다는 점은 실패와 같지만 실패가 아니다.
+                    if code == 2 and not made:
+                        job['state'] = 'skipped'
+                    else:
+                        job['state'] = 'done' if (code == 0 and made) else 'failed'
                     if made:
                         job['path'] = os.path.relpath(made, root).replace(os.sep, '/')
             out.append({'id': job['id'], 'mode': job['mode'], 'state': job['state'],
@@ -275,7 +304,7 @@ def job_status(root):
 EDITABLE = {
     'author': str, 'agent': str, 'notify': bool, 'submit_url': str, 'submit_label': str,
     'mine_only': bool, 'redact': bool, 'backfill_days': int, 'retain_months': int,
-    'custom_format': bool, 'custom_rules': bool,
+    'custom_format': bool, 'custom_rules': bool, 'custom_samples': bool,
     'exclude_repos': list, 'exclude_paths': list,
     'claude_bin': str, 'codex_bin': str, 'python_bin': str,
     'max_prompt_chars': int, 'max_prompts_per_session': int,
@@ -524,7 +553,8 @@ textarea.lines { max-width:440px; min-height:82px; resize:vertical;
          padding:var(--sp-3) 0; border-top:1px solid var(--line); }
 .card > .field:first-child { border-top:0; }
 .field label { font-size:var(--fs-300); color:var(--text); }
-.hint { grid-column:2; font-size:var(--fs-100); color:var(--faint); }
+.hint { grid-column:2; font-size:var(--fs-100); color:var(--faint);
+        white-space:pre-line; }
 
 /* -- 구역 제목 ----------------------------------------------------- */
 .sectitle { padding:var(--sp-3) var(--sp-3) var(--sp-1);
@@ -571,6 +601,7 @@ textarea.lines { max-width:440px; min-height:82px; resize:vertical;
 .job .dot { width:8px; height:8px; border-radius:50%; flex:0 0 8px; }
 .job.done .dot { background:var(--ok); }
 .job.failed .dot { background:var(--bad); }
+.job.skipped .dot { background:var(--faint); }
 .job .note { margin-top:var(--sp-2); color:var(--muted); font-size:var(--fs-100); }
 .job a { color:var(--accent); text-decoration:none; word-break:break-all; }
 .job a:hover { text-decoration:underline; }
@@ -691,10 +722,6 @@ textarea.src { display:block; width:100%; min-height:320px;
 
 .conf .card > h3 { margin:var(--sp-4) 0 2px; font-size:var(--fs-100);
                    font-weight:var(--fw-bold); letter-spacing:.05em; color:var(--faint); }
-.conf .foot { display:flex; align-items:center; gap:var(--sp-3); margin-top:var(--sp-1); }
-.conf .foot .said { font-size:var(--fs-200); font-weight:var(--fw-bold); }
-.conf .foot .said.ok { color:var(--ok); }
-.conf .foot .said.bad { color:var(--bad); }
 
 .empty { color:var(--faint); font-size:var(--fs-200); padding:var(--sp-4) var(--sp-3); }
 
@@ -753,6 +780,7 @@ textarea.src { display:block; width:100%; min-height:320px;
           </span>
           <button id="edit">고치기</button>
           <button id="save" class="primary" hidden>저장</button>
+          <button id="confSave" class="primary" hidden>설정 저장</button>
           <button id="copy" class="quiet">복사</button>
           {{SUBMIT_BUTTON}}
         </div>
@@ -778,7 +806,10 @@ const SUBMIT_URL = "{{SUBMIT_URL}}";
 // 알림을 눌러 들어오면 어떤 보고서를 열지 주소가 말해 준다
 const START = new URLSearchParams(location.search).get('path') || '';
 const AREA_NAME = { daily:'일일보고', weekly:'주간보고', log:'한 일 목록', raw:'수집 원본' };
-const CUSTOM_NAME = { 'report-format.md':'보고서 양식', 'writing-rules.md':'글쓰기 문체' };
+const CUSTOM_NAME = { 'report-format.md':'보고서 양식', 'writing-rules.md':'글쓰기 문체',
+                      'my-reports.md':'내 보고서' };
+// 제출문 절은 붙여넣기용이라 보고서 전체가 아니라 그 절만 클립보드에 담는다
+const SUBMIT_HEAD = '제출문';
 // 보고서를 쓸 때 근거로 들춰 보는 것들이다. 매번 펼쳐져 있으면 목록만 길어진다
 const FOLDED = ['log', 'raw'];
 let raw = '', current = '', dirty = false, mode = 'preview', readme = null, conf = null;
@@ -796,11 +827,22 @@ const FIELDS = [
     hint:'켜면 보고 폴더의 custom\\report-format.md를 쓴다. 없으면 기본값을 복사해 만들어 준다' },
   { k:'custom_rules',  t:'bool', def:false, label:'내 글쓰기 문체 쓰기',
     hint:'켜면 기본 원칙 뒤에 custom\\writing-rules.md를 덧붙인다' },
+  { k:'custom_samples', t:'bool', def:false, label:'내 보고서 따라하기',
+    hint:'켜면 custom\\my-reports.md에 붙여넣은 지난 보고서를 문체 예시로 쓴다.' +
+         '\n보고서 맨 앞에 그 문체로 쓴 제출문 절이 생긴다.' +
+         '\n붙여넣은 것이 없으면 아무 일도 하지 않는다' },
   { h:'수집' },
   { k:'mine_only',     t:'bool', def:true,   label:'내 이메일의 커밋만' },
   { k:'redact',        t:'bool', def:true,   label:'키·토큰 가리기' },
-  { k:'exclude_repos', t:'lines',  label:'제외할 저장소', hint:'한 줄에 하나' },
-  { k:'exclude_paths', t:'lines',  label:'작업으로 안 치는 경로', hint:'한 줄에 하나' },
+  { k:'exclude_repos', t:'lines',  label:'제외할 저장소',
+    hint:'한 줄에 하나. 경로에 그 글자가 들어가면 제외된다.' +
+         '\nex. my-project' +
+         '\n폴더 이름만 적는 편이 확실하다. 저장소를 옮겨도 계속 걸린다.' +
+         '\nex. /c/Users/me/project/my-project → 안 걸린다 (Git Bash 형식)' },
+  { k:'exclude_paths', t:'lines',  label:'작업으로 안 치는 경로',
+    hint:'한 줄에 하나. 경로에 그 글자가 들어가면 뺀다.' +
+         '\nex. node_modules' +
+         '\nex. \\build\\  (구분자는 \\ 로 적는다)' },
   { h:'실행' },
   { k:'backfill_days', t:'num',    label:'빠뜨린 날 채우기', hint:'며칠 전까지. 0이면 안 함' },
   { k:'retain_months', t:'num',    label:'수집본 보관(개월)',
@@ -930,6 +972,7 @@ function show(which){
   $('edit').textContent = ed ? '보기' : '고치기';
   $('save').hidden = !doc || !ed || !writable;
   $('copy').hidden = !doc || ed;
+  $('confSave').hidden = which !== 'config';
   if ($('submit')) $('submit').hidden = !doc || ed;
 
   $('tabPreview').classList.toggle('on', which === 'preview');
@@ -1118,13 +1161,22 @@ function jobCard(j){
     el.innerHTML = '<div class="row"><span class="dot"></span><span class="what">' + label + ' 완료</span>'
                  + '<span class="time">' + j.seconds + '초</span><span class="x">&times;</span></div>'
                  + (j.path ? '<div class="note"><a href="#" data-open="' + j.path + '">열기: ' + j.path + '</a></div>' : '');
+  } else if (j.state === 'skipped') {
+    el.innerHTML = '<div class="row"><span class="dot"></span><span class="what">' + label + ' 건너뜀</span>'
+                 + '<span class="time">' + j.seconds + '초</span><span class="x">&times;</span></div>'
+                 + '<div class="note">다른 실행이 진행 중이어서 물러났습니다</div>';
   } else {
     el.innerHTML = '<div class="row"><span class="dot"></span><span class="what">' + label + ' 실패</span>'
                  + '<span class="time">' + j.seconds + '초</span><span class="x">&times;</span></div>'
                  + '<div class="note">runlog 폴더의 실행 기록을 확인하세요</div>';
   }
   const x = el.querySelector('.x');
-  if (x) x.onclick = () => el.remove();
+  // 서버가 작업을 계속 들고 있으면 다음 폴링이 카드를 다시 만든다.
+  // 화면에서 지우기 전에 서버에서 먼저 뺀다.
+  if (x) x.onclick = async () => {
+    el.remove();
+    try { await fetch(api('dismiss', { id: j.id }), { method:'POST' }); } catch (e) {}
+  };
   const a = el.querySelector('a[data-open]');
   if (a) a.onclick = e => { e.preventDefault(); loadFiles().then(() => openReport(a.dataset.open)); };
 }
@@ -1168,6 +1220,12 @@ function drawConfig(){
   const h = document.createElement('h1');
   h.textContent = '설정';
   box.appendChild(h);
+  const note = document.createElement('div');
+  note.className = 'hint';
+  note.style.gridColumn = 'auto';
+  note.style.margin = '-12px 0 20px';
+  note.textContent = '다음 실행부터 적용됩니다';
+  box.appendChild(note);
 
   let card = document.createElement('div');
   card.className = 'card';
@@ -1233,18 +1291,8 @@ function drawConfig(){
     card.appendChild(row);
   }
 
-  const foot = document.createElement('div');
-  foot.className = 'foot';
-  const save = document.createElement('button');
-  save.className = 'primary';
-  save.textContent = '설정 저장';
-  const note = document.createElement('span');
-  note.className = 'hint';
-  note.style.gridColumn = 'auto';
-  note.textContent = '다음 실행부터 적용됩니다';
-  const said = document.createElement('span');
-  said.className = 'said';
-  save.onclick = async () => {
+  // 저장은 문서 화면과 같은 자리에서 한다: 위쪽 동작 줄의 단추와 그 옆 알림
+  $('confSave').onclick = async () => {
     const out = { weekly: {} };
     box.querySelectorAll('[data-key]').forEach(el => {
       const k = el.dataset.key, t = el.dataset.type;
@@ -1256,24 +1304,13 @@ function drawConfig(){
       if (k.startsWith('weekly.')) out.weekly[k.slice(7)] = v; else out[k] = v;
     });
     const r = await fetch(api('config'), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(out) });
-    if (!r.ok) {
-      said.className = 'said bad';
-      said.textContent = '저장하지 못했습니다';
-      return;
-    }
+    if (!r.ok) { setState('저장하지 못했습니다', true); return; }
     conf = await r.json();
-    said.className = 'said ok';
-    said.textContent = '저장 완료';
     // 양식 토글을 바꿨으면 왼쪽 목록이 바로 따라와야 한다. 켜면 그 자리에서
     // 파일이 생기므로 새로 고치지 않아도 열 수 있다.
     loadFiles();
-    clearTimeout(said.timer);
-    said.timer = setTimeout(() => { said.className = 'said'; said.textContent = ''; }, 3000);
+    flash('저장했습니다');
   };
-  foot.appendChild(save);
-  foot.appendChild(said);
-  foot.appendChild(note);
-  box.appendChild(foot);
 }
 
 // 첫 화면은 가장 최근 보고서다. 길을 잃으면 여기로 돌아온다
@@ -1307,10 +1344,30 @@ $('save').onclick = async () => {
   else { setState('저장하지 못했습니다', true); }
 };
 $('src').oninput = () => { dirty = true; setState('수정 중', true); fitSrc(); };
-$('copy').onclick = async () => { await navigator.clipboard.writeText(text()); flash('클립보드에 복사했습니다'); };
+// 제출문 절이 있으면 그것만, 없으면 보고서 전체를 준다. 무엇을 담았는지는
+// 눌렀을 때 말해 준다 - 조용히 일부만 복사되면 붙여넣고 나서야 안다.
+function toCopy(){
+  const lines = text().split(/\r?\n/);
+  const isHead = s => /^##\s/.test(s);
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (isHead(lines[i]) && lines[i].includes(SUBMIT_HEAD)) { start = i + 1; break; }
+  }
+  if (start < 0) return { body: text(), part: false };
+  let end = lines.length;
+  for (let i = start; i < lines.length; i++) { if (isHead(lines[i])) { end = i; break; } }
+  const body = lines.slice(start, end).join('\n').trim();
+  return body ? { body: body, part: true } : { body: text(), part: false };
+}
+$('copy').onclick = async () => {
+  const c = toCopy();
+  await navigator.clipboard.writeText(c.body);
+  flash(c.part ? '제출문을 복사했습니다' : '클립보드에 복사했습니다');
+};
 if ($('submit')) $('submit').onclick = async () => {
-  try { await navigator.clipboard.writeText(text()); } catch (e) {}
-  flash('복사했습니다. 붙여넣으세요');
+  const c = toCopy();
+  try { await navigator.clipboard.writeText(c.body); } catch (e) {}
+  flash(c.part ? '제출문을 복사했습니다. 붙여넣으세요' : '복사했습니다. 붙여넣으세요');
   window.open(SUBMIT_URL, '_blank');
 };
 window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
@@ -1442,6 +1499,8 @@ def make_handler(root, report_path, page, readme_path):
                 if not job_id:
                     return self._send(400, b'bad mode')
                 return self._json({'id': job_id})
+            if leaf == 'dismiss':
+                return self._json({'dropped': drop_job(query.get('id'))})
             target = self._target(query)
             if not target:
                 return self._send(404, b'not found')

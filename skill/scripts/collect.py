@@ -55,9 +55,19 @@ SECRET_PATTERNS = [
                r"""\s*[=:]\s*["']?)([^\s"',;)]{8,})""", re.IGNORECASE),
     re.compile(r'(Bearer\s+)([A-Za-z0-9._\-]{20,})'),
     re.compile(r'(-----BEGIN [A-Z ]*PRIVATE KEY-----)[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----)'),
-    # 이름표 없이 떠 있는 긴 무작위 문자열 (서비스 키, 액세스 토큰)
-    re.compile(r'([A-Za-z0-9+/]{40,}={0,2})'),
-    re.compile(r'([0-9a-f]{40,})', re.IGNORECASE),
+    # 이름표 없이 떠 있는 긴 무작위 문자열 (서비스 키, 액세스 토큰).
+    #
+    # 경로 구분자를 문자 클래스에 넣지 않는다. 넣으면 40자가 넘는 파일 경로가
+    # 통째로 가려져 무엇을 한 일인지 알 수 없게 된다. 슬래시가 섞인 키는 조각이
+    # 짧아져 안 걸리지만, 그런 값은 보통 이름표를 달고 있어 위에서 잡힌다.
+    # 숫자를 하나 요구하는 이유도 같다. 긴 함수 이름이 가려지면 안 된다.
+    re.compile(r'\b(?=[A-Za-z0-9+]*\d)([A-Za-z0-9+]{40,}={0,2})(?![A-Za-z0-9+=])'),
+    # 숫자가 없는 16진수(abcdef...)는 위 패턴이 그냥 넘긴다. 여기서 받는다.
+    #
+    # 40자 16진수는 커밋 해시 길이이기도 해서, 프롬프트에 적어 둔 해시도 함께
+    # 가려진다. 그래도 40자로 둔다. 같은 길이가 토큰의 길이이기도 하고(옛
+    # GitHub 액세스 토큰이 40자 16진수다), 해시 자체는 커밋 절에 그대로 남는다.
+    re.compile(r'\b([0-9a-f]{40,})\b', re.IGNORECASE),
 ]
 SECRET_MASK = '<가림>'
 
@@ -501,19 +511,31 @@ def scan_git(ctx, repos, dfrom, dto):
 CUSTOM_FILES = (
     ('report-format.md', '보고서 양식', 'custom_format'),
     ('writing-rules.md', '글쓰기 문체', 'custom_rules'),
+    ('my-reports.md', '내 보고서', 'custom_samples'),
 )
 CUSTOM_MAX = 8 * 1024       # 이보다 크면 양식이 아니라 다른 글이다
 CUSTOM_MIN = 40             # 제목만 남기고 지운 파일을 양식으로 쓰면 보고서가 빈다
 
+# 지난 보고서를 쌓아 두는 파일은 규칙이 아니라 예시 더미라 훨씬 커진다.
+SAMPLE_FILE = 'my-reports.md'
+SAMPLE_MAX = 64 * 1024
+# 표시선 아래가 붙여넣는 자리다. 안내문만 있고 그 아래가 비었으면 아직 넣지
+# 않은 것이다. 이때 안내문을 예시로 삼으면 안내문의 문체를 배우게 된다.
+SAMPLE_MARK = '<!-- PASTE BELOW -->'
+# 여기서 쓰이지 않는 예시는 러너도 넘기지 않아야 한다. 한쪽만 통과하면 수집
+# 결과에는 쓰였다고 적히는데 보고서엔 그 절이 없는, 설명할 수 없는 상태가 된다.
+# 러너 쪽 기준은 _env.ps1 의 Get-SampleFile 에 있다.
+SAMPLE_MIN = CUSTOM_MIN
 
-def read_text(path):
+
+def read_text(path, cap=CUSTOM_MAX):
     """사용자가 메모장으로 저장해도 읽히게 한다. 실패하면 이유를 준다."""
     try:
         raw = open(path, 'rb').read()
     except OSError as e:
         return None, '읽지 못했다 (%s)' % e.__class__.__name__
-    if len(raw) > CUSTOM_MAX:
-        return None, '너무 크다 (%.1fKB, 최대 %dKB)' % (len(raw) / 1024.0, CUSTOM_MAX // 1024)
+    if len(raw) > cap:
+        return None, '너무 크다 (%.1fKB, 최대 %dKB)' % (len(raw) / 1024.0, cap // 1024)
     for enc in ('utf-8-sig', 'cp949'):
         try:
             text = raw.decode(enc)
@@ -527,6 +549,16 @@ def read_text(path):
             return None, '내용이 거의 없다 (글자 %d개, 최소 %d개)' % (len(body), CUSTOM_MIN)
         return text, None
     return None, '글자 인코딩을 알 수 없다 (UTF-8로 저장해 보라)'
+
+
+def sample_body(text):
+    """표시선 아래에 붙여넣은 부분만 돌려준다.
+
+    표시선을 지우고 보고서만 남긴 파일도 받는다. 그때는 전체가 붙여넣은 것이다.
+    """
+    if SAMPLE_MARK not in text:
+        return text.strip()
+    return text.rsplit(SAMPLE_MARK, 1)[1].strip()
 
 
 def scan_custom(root, cfg):
@@ -547,7 +579,15 @@ def scan_custom(root, cfg):
             out.append({'name': name, 'label': label, 'mine': True, 'used': False,
                         'why': '파일이 없다 (다음 실행이 기본값으로 다시 만든다)'})
             continue
-        text, why = read_text(path)
+        text, why = read_text(path, SAMPLE_MAX if name == SAMPLE_FILE else CUSTOM_MAX)
+        if text is not None and name == SAMPLE_FILE:
+            # 파일 전체는 안내문만으로도 분량을 넘기므로 표시선 아래만 센다.
+            pasted = ''.join(sample_body(text).split())
+            if not pasted:
+                text, why = None, '붙여넣은 보고서가 없다 (안내문만 있다)'
+            elif len(pasted) < SAMPLE_MIN:
+                text, why = None, ('붙여넣은 보고서가 너무 짧다 (글자 %d개, 최소 %d개)'
+                                   % (len(pasted), SAMPLE_MIN))
         out.append({'name': name, 'label': label, 'mine': True,
                     'used': text is not None, 'why': why,
                     'path': os.path.join('custom', name),
@@ -705,7 +745,10 @@ def _repo_of(path, cache):
             found = cache[key]
             break
         seen.append(key)
-        if os.path.isdir(os.path.join(d, '.git')):
+        # worktree 와 서브모듈에서는 .git 이 폴더가 아니라 파일이다. 폴더만
+        # 보면 저장소가 아닌 것으로 처리되어, 이미 커밋된 변경이 커밋 절과
+        # 파일 변경 절에 두 번 올라온다.
+        if os.path.exists(os.path.join(d, '.git')):
             found = d
             break
         parent = os.path.dirname(d)

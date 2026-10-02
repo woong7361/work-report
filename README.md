@@ -8,16 +8,37 @@ AI와 나눈 대화(Claude Code·Codex)와 git 이력에서 그날 한 일을 �
 
 ## 설치
 
-zip을 **영구 폴더에 푼다.** `Downloads`나 임시 폴더는 안 된다.
-풀어 둔 폴더에서 **`install.cmd`를 더블클릭**하면 끝이다.
+zip을 **아무 데나 푼다.** 풀어 둔 폴더에서 **`install.cmd`를 더블클릭**하면 끝이다.
+더블클릭은 파일을 내 PC 안으로 옮겨 두고 설치하므로, 끝나면 푼 폴더도 zip도 지워도 된다.
 `설치 완료`가 나오고 앱이 열린다. (`-Force`로 설치하면 앱을 열지 않는다.)
 
 옵션을 주려면 PowerShell에서 실행한다.
 
 ```powershell
 cd <풀어 둔 폴더>
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -DailyTime 18:00
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Copy -DailyTime 18:00
 ```
+
+`install.ps1`을 직접 부르면 `-Copy`가 붙지 않는다. 그러면 **푼 폴더를 그대로 가리키는**
+설치가 되어, 고치면 곧바로 반영되는 대신 그 폴더를 지우면 깨진다. skill을 고쳐 가며 쓸 때만 쓴다.
+
+### 어디에 설치되나
+
+skill은 에이전트가 읽는 자리에 있어야 해서 위치를 고를 수 없다. 설치된 CLI를 모두 찾아 넣는다.
+다만 **실체는 한 벌만 두고 나머지는 그것을 가리킨다.** 그래야 한 번 고치면 전부 따라오고,
+설치가 중간에 실패해도 에이전트마다 버전이 엇갈리지 않는다.
+
+```
+%LOCALAPPDATA%\work-report\skills\work-report      <- 실체 (-Copy 로 설치했을 때)
+
+~\.claude\skills\work-report                       -> 위를 가리킴
+~\.codex\skills\work-report                        -> 위를 가리킴
+```
+
+`-Copy` 없이 설치하면 실체가 **푼 폴더**가 되고, 가리키는 관계는 같다.
+즉 `-Copy`가 정하는 것은 위치가 아니라 *실체를 어디에 두느냐*다.
+
+보고서와 설정은 이와 별개로 `~\work-report\`에 쌓인다. 설치를 다시 해도 건드리지 않는다.
 
 마지막에 이렇게 나오고 앱이 열린다.
 
@@ -40,7 +61,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -DailyTime 18:
 | `-Agents claude` | skill을 설치할 CLI만 고른다 (기본: 설치된 CLI 전부) |
 | `-SkillName <이름>` | 같은 이름의 skill이 이미 있을 때 다른 이름으로 설치 |
 | `-ClaudeHome` / `-CodexHome <경로>` | 에이전트 홈을 못 찾을 때 직접 지정 |
-| `-Copy` | 연결 대신 복사해서 설치 |
+| `-Copy` | 푼 폴더 대신 `%LOCALAPPDATA%`에 복사해 두고 거기를 가리킨다 (`install.cmd`가 붙여서 실행한다) |
 | `-NoSchedule` | 자동 실행을 등록하지 않는다 |
 | `-Force` | 묻지 않고 교체 |
 
@@ -96,6 +117,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$s\collect.ps1" -From 2026-
 | `submit_url` | 제출 화면 주소. 넣으면 뷰어에 `제출하러 가기` 단추가 생긴다 |
 | `exclude_repos` | 보고에서 뺄 저장소 |
 | `exclude_paths` | 작업으로 치지 않을 경로 |
+| `custom_format`, `custom_rules` | 내 양식·문체를 쓸지 (아래 `내 양식`) |
+| `custom_samples` | 지난 보고서를 문체 예시로 쓸지 (아래 `내 양식`) |
 | `mine_only` | 내 이메일의 커밋만 센다 (기본 참) |
 | `redact` | 프롬프트에 섞인 키·토큰을 가린다 (기본 참) |
 | `backfill_days` | PC가 꺼져 빠뜨린 평일 보고서를 며칠 전까지 채울지 (기본 2) |
@@ -103,16 +126,54 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$s\collect.ps1" -From 2026-
 | `weekly.end_day`, `weekly.span_days` | 주간 구간 (기본 수요일에 끝나는 7일) |
 | `claude_bin`, `codex_bin`, `python_bin` | 자동 탐색이 실패할 때만 전체 경로 |
 
+`exclude_repos`와 `exclude_paths`는 **경로에 그 글자가 들어가면 뺀다**. 전체 경로를 다 적을 필요가 없고,
+오히려 폴더 이름만 적는 편이 확실하다. 저장소를 옮겨도 계속 걸리고, 수집기가 경로를 `C:\...`와 `C:/...`
+두 형태로 다루기 때문이다. Git Bash 형식(`/c/Users/...`)은 어느 쪽과도 맞지 않아 걸리지 않는다.
+
+```json
+"exclude_repos": ["my-project"],
+"exclude_paths": ["node_modules", "\\build\\"]
+```
+
 `*_homes`, `*_dirs`, `skill_dirs`는 설치가 채운다. 직접 고치지 않는다.
 
 알림은 Windows 알림 설정에 **work-report**라는 이름으로 나타난다. 거기서 따로 켜고 끌 수 있다.
 문구를 바꾸려면 `skill\scripts\messages.json`을 고친다.
 
+## 내 양식
+
+결과물의 모양을 바꾸는 파일 세 개가 보고 폴더의 `custom\`에 있다.
+설정에서 토글을 켜면 기본값이 거기로 복사되고, 그다음부터 고친 것이 살아남는다.
+업데이트는 `skill\` 폴더만 덮으므로 보고 폴더는 건드리지 않는다.
+
+| 파일 | 토글 | 하는 일 |
+|---|---|---|
+| `report-format.md` | `custom_format` | 보고서의 절과 표를 정한다 |
+| `writing-rules.md` | `custom_rules` | 기본 문체 원칙 뒤에 덧붙는다 |
+| `my-reports.md` | `custom_samples` | 지난 보고서를 예시로 삼아 제출문을 쓴다 |
+
+### 내 보고서 따라하기
+
+`my-reports.md`의 표시선(`<!-- PASTE BELOW -->`) 아래에 최근 제출한 보고서를
+그대로 붙여넣는다. 여러 개를 `---` 한 줄로 나눠 넣고, 최근 것을 위에 둔다.
+
+붙여넣은 것이 있으면 보고서 맨 앞에 `## 0. 제출문` 절이 생긴다.
+그 절은 예시의 문체로 쓰이고, 뷰어의 `복사`와 `제출하러 가기`는 보고서 전체가 아니라
+그 절만 클립보드에 담는다. 붙여넣어 그대로 낼 수 있는 글이기 때문이다.
+
+다듬어서 넣지 않는다. 다듬으면 내 문체가 아니라 다듬은 문체를 배운다.
+표시선 아래가 비어 있으면 토글이 켜져 있어도 아무 일도 하지 않는다.
+안내문만 남은 파일을 예시로 쓰면 안내문의 문체를 따라 쓰게 되기 때문이다.
+
+**예시는 쓰는 방식만 정한다.** 거기 적힌 업무가 새 보고서로 옮겨 오지는 않는다.
+내용은 언제나 그 기간의 기록에서만 나온다.
+
 ## 제거
 
 **`uninstall.cmd`를 더블클릭**하면 확인을 묻고 지운다.
 
-예약 작업과 skill을 지운다. **보고서는 남는다.** 보고서까지 지우려면 `-PurgeReports`,
+예약 작업과 skill을 지운다. 에이전트 홈의 연결과 `%LOCALAPPDATA%`의 실체를 함께 치운다.
+**보고서는 남는다.** 보고서까지 지우려면 `-PurgeReports`,
 다른 이름으로 설치했다면 `-SkillName <이름>`을 함께 준다. 확인 없이 지우려면 `-Yes`.
 
 ## 문제 해결
@@ -127,7 +188,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$s\collect.ps1" -From 2026-
 | CLI가 없다 | 설치 중에 물어보면 `Y`. 로그인하라고 하면 안내대로 하고 엔터 |
 | Python을 못 찾는다 | 설치 중에 물어보면 `Y`를 누른다. 직접 깔려면 python.org에서 받고 `Add python.exe to PATH`를 켠다. `WindowsApps`의 것은 실제 Python이 아니다 |
 | 기록이 안 잡힌다 | `collect.ps1 -Check`로 찾은 폴더와 파일 수를 확인한다 |
-| 문체를 바꾸고 싶다 | `skill\references\writing-rules.md`를 고친다 |
+| 문체를 바꾸고 싶다 | 설정에서 `내 글쓰기 문체 쓰기`를 켜고 `custom\writing-rules.md`를 고친다 |
+| 보고서가 내 말투가 아니다 | 설정에서 `내 보고서 따라하기`를 켜고 `custom\my-reports.md`에 지난 보고서를 붙여넣는다 |
 | 더블클릭했더니 경고가 뜬다 | 인터넷에서 받은 파일 표시 때문이다. `실행`을 누른다 |
 | zip 파일이 실행을 거부한다 | `Get-ChildItem -Recurse \| Unblock-File` |
 
@@ -148,14 +210,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$s\collect.ps1" -From 2026-
 ## 나눠줄 때
 
 폴더 전체를 준다. `scripts\`만으로는 동작하지 않는다. 받는 사람은 `install.cmd`만 더블클릭하면 된다.
-연결 설치는 푼 폴더를 계속 가리키므로 그 폴더를 지우면 안 된다. 남기기 싫으면 `-Copy`로 설치한다.
+더블클릭은 파일을 받는 사람 PC 안으로 옮겨 두므로 푼 폴더가 남아 있을 필요가 없다.
+어디에 풀든 상관없고 끝나면 지워도 된다.
 
-새 버전은 같은 자리에 덮어 풀고 `install.cmd`를 다시 실행한다. 설정값은 그대로 남는다.
+새 버전도 아무 데나 풀고 `install.cmd`를 다시 실행하면 된다.
+묻지 않고 교체하며, 보고서와 `custom\`의 양식, `config.json`의 설정값은 그대로 남는다.
+CLI를 여럿 쓰더라도 실체가 한 벌이라 한 번의 설치로 전부 같은 버전이 된다.
 
 팀원에게 보낼 안내:
 
-> 1. 첨부 zip을 영구 폴더에 풉니다. 예: `C:\tools\work-report`
+> 1. 첨부 zip을 아무 폴더에나 풉니다.
 > 2. 그 폴더의 `install.cmd`를 더블클릭합니다. 경고가 뜨면 `실행`을 누릅니다.
 > 3. `설치 완료`가 나오고 앱이 열리면 끝입니다. 창은 아무 키나 누르면 닫힙니다.
 > 4. 평일 17:30에 저절로 실행되고, 완료 알림을 누르면 보고서가 열립니다.
 > 5. 쓰는 법은 앱을 열고 왼쪽 아래 `사용 설명`을 누르면 나옵니다.
+> 6. 설치가 끝나면 푼 폴더와 zip은 지워도 됩니다.

@@ -13,6 +13,21 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'skill\scripts\_env.ps1')
 
+# Removing is done in pieces, and a piece that fails must not take the rest
+# with it: the scheduled tasks go first, so an abort halfway would leave an
+# install that no longer runs but is still on disk, with only a stack trace
+# to explain it. Each step reports and carries on, and the failures are
+# listed at the end where they can be acted on.
+$failed = @()
+function Try-Step {
+    param([string]$What, [scriptblock]$Do)
+    try { & $Do }
+    catch {
+        $script:failed += "$What : $($_.Exception.Message)"
+        Write-Host "could not remove $What"
+    }
+}
+
 $m = Get-Messages
 # Double-clicking the .cmd lands here, so ask before undoing an install.
 if (-not $Yes) {
@@ -30,19 +45,29 @@ if (-not $Yes) {
     }
 }
 
+# The scheduled tasks, the click handler, the notification identity and the
+# Start Menu entry are named after the tool, not after -SkillName: one machine
+# runs one work-report, and -SkillName only moves the skill folder aside when
+# another skill already owns that name.
 foreach ($name in 'work-report-daily', 'work-report-weekly') {
     if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $name -Confirm:$false
-        Write-Host "removed scheduled task: $name"
+        Try-Step "scheduled task $name" {
+            Unregister-ScheduledTask -TaskName $name -Confirm:$false
+            Write-Host "removed scheduled task: $name"
+        }
     }
 }
 
 foreach ($k in 'HKCU:\Software\Classes\workreport',
     'HKCU:\Software\Classes\AppUserModelId\WorkReport.Notify') {
-    if (Test-Path $k) { Remove-Item $k -Recurse -Force; Write-Host "removed registry key: $k" }
+    if (Test-Path $k) {
+        Try-Step "registry key $k" { Remove-Item $k -Recurse -Force; Write-Host "removed registry key: $k" }
+    }
 }
 $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\work-report.lnk'
-if (Test-Path $lnk) { Remove-Item $lnk -Force; Write-Host 'removed Start Menu entry' }
+if (Test-Path $lnk) {
+    Try-Step 'Start Menu entry' { Remove-Item $lnk -Force; Write-Host 'removed Start Menu entry' }
+}
 
 # An agent can have several homes and the install puts the skill in all of them,
 # so removing only the one this shell points at would leave copies behind.
@@ -50,6 +75,9 @@ if (Test-Path $lnk) { Remove-Item $lnk -Force; Write-Host 'removed Start Menu en
 # was edited or the skill was installed by an older version.
 $root = Get-ReportRoot -Override $Root
 $cfg = Get-ReportConfig -Root $root
+# A running viewer would go on serving a tool that is being removed, and it
+# holds the files this is about to delete.
+Try-Step 'running app' { if (Stop-Viewer -Root $root) { Write-Host 'closed the running app' } }
 $targets = @()
 if ($cfg -and $cfg.skill_dirs) { $targets += @($cfg.skill_dirs) }
 foreach ($a in 'claude', 'codex') {
@@ -66,14 +94,37 @@ foreach ($target in ($targets | Where-Object { $_ } | Select-Object -Unique)) {
         Write-Host "kept (not installed by work-report): $target"
         continue
     }
-    if ($item.LinkType) { $item.Delete() } else { Remove-Item $target -Recurse -Force }
-    Write-Host "removed skill: $target"
+    Try-Step "skill $target" {
+        if ($item.LinkType) { $item.Delete() } else { Remove-Item $target -Recurse -Force }
+        Write-Host "removed skill: $target"
+    }
+}
+
+# The staged copy that -Copy makes. Links to it are gone by now, and leaving it
+# behind would keep a full copy of the skill on disk with nothing pointing at it.
+$stage = Join-Path (Join-Path $env:LOCALAPPDATA 'work-report\skills') $SkillName
+if (Test-Path $stage) {
+    if (Test-Path (Join-Path $stage 'scripts\collect.py')) {
+        Try-Step "files $stage" {
+            Remove-Item $stage -Recurse -Force
+            Write-Host "removed files: $stage"
+            $stageParent = Split-Path -Parent $stage
+            if ((Test-Path $stageParent) -and -not (Get-ChildItem $stageParent -Force)) {
+                Remove-Item $stageParent -Recurse -Force
+                $appDir = Split-Path -Parent $stageParent
+                if ((Test-Path $appDir) -and -not (Get-ChildItem $appDir -Force)) { Remove-Item $appDir -Recurse -Force }
+            }
+        }
+    }
+    else { Write-Host "kept (not installed by work-report): $stage" }
 }
 
 if ($PurgeReports) {
     if (Test-Path $root) {
-        Remove-Item $root -Recurse -Force
-        Write-Host "removed reports: $root"
+        Try-Step "reports $root" {
+            Remove-Item $root -Recurse -Force
+            Write-Host "removed reports: $root"
+        }
     }
 }
 else {
@@ -82,5 +133,11 @@ else {
 
 $m = Get-Messages
 Write-Host ''
+if ($failed) {
+    Write-Host '  left behind:' -ForegroundColor Yellow
+    $failed | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
+    Write-Host '  Close the app (Start Menu entry work-report) and run this again.' -ForegroundColor Yellow
+    Write-Host ''
+}
 Write-Host ("  {0}" -f $(if ($m -and $m.install) { $m.install.removed } else { 'Uninstall complete' })) -ForegroundColor Green
 Write-Host ''

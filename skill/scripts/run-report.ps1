@@ -97,9 +97,11 @@ function Invoke-Report {
     # a silent miss when it decides not to look.
     $fmt = Get-FormatFile -Name 'report-format.md' -Root $root -Config $cfg -Flag 'custom_format'
     $rules = Get-FormatFile -Name 'writing-rules.md' -Root $root -Config $cfg -Flag 'custom_rules'
+    $samples = Get-SampleFile -Root $root -Config $cfg
     if ($fmt) { $ask += " Report format: `"$fmt`"." }
     if ($rules) { $ask += " Writing rules: `"$rules`"." }
-    if ($fmt -or $rules) { $ask += ' Read those files first and follow them exactly.' }
+    if ($samples) { $ask += " My past reports (style examples only, never a source of content): `"$samples`"." }
+    if ($fmt -or $rules -or $samples) { $ask += ' Read those files first and follow them exactly.' }
 
     # The skill may be installed under another name to avoid a clash, so take
     # the name from the folder this script sits in rather than assuming it.
@@ -107,15 +109,21 @@ function Invoke-Report {
 
     # config.json decides which CLI runs, so it can name one the skill was never
     # installed for. That agent would start, find no skill and write nothing.
-    $agentHomes = @($cfg."${Agent}_homes")
-    if ($agentHomes.Count -gt 0) {
-        $hasSkill = $agentHomes | Where-Object { Test-Path (Join-Path $_ "skills\$skillName") }
-        if (-not $hasSkill) {
-            Log "skill '$skillName' is not installed for $Agent"
-            Notify -State 'fail' -Detail $log -RangeText $rangeText
-            Write-Error "The skill is not installed for $Agent. Run: install.ps1 -Agents $Agent"
-            return $false
-        }
+    #
+    # The homes come from the same function the installer used, not from the
+    # config key alone: the key is absent for an agent that was not installed,
+    # and reading it directly turned that into a parameter binding error before
+    # anything could be logged - the one case this check exists to report.
+    $agentHomes = @(Get-AgentHomes -Agent $Agent -Config $cfg)
+    # Keep the homes that actually carry the skill, not just the fact that one
+    # of them does: the agent is pointed at a single home further down, and
+    # taking the first of all homes could hand it one where the skill is absent.
+    $withSkill = @($agentHomes | Where-Object { Test-Path (Join-Path $_ "skills\$skillName") })
+    if ($agentHomes.Count -gt 0 -and $withSkill.Count -eq 0) {
+        Log "skill '$skillName' is not installed for $Agent"
+        Notify -State 'fail' -Detail $log -RangeText $rangeText
+        Write-Error "The skill is not installed for $Agent. Run: install.ps1 -Agents $Agent"
+        return $false
     }
 
     if ($Agent -eq 'claude') {
@@ -145,7 +153,7 @@ function Invoke-Report {
     # Point the agent at the home the installer recorded. A scheduled task starts
     # with a bare environment, so without this the agent would fall back to the
     # default home and miss the skill, the settings and the sign-in kept elsewhere.
-    $agentHome = @($cfg."${Agent}_homes")[0]
+    $agentHome = @($withSkill)[0]
     if ($agentHome) {
         if ($Agent -eq 'claude') { $env:CLAUDE_CONFIG_DIR = $agentHome } else { $env:CODEX_HOME = $agentHome }
     }
@@ -238,7 +246,10 @@ if (-not $DryRun) {
         if ($age.TotalMinutes -lt 45) {
             Log "another run is in progress (started $([int]$age.TotalMinutes) min ago); skipping"
             Write-Output 'work-report: another run is in progress; skipping.'
-            return
+            # Exit 2, not 0: nothing was written, but nothing failed either. The
+            # viewer shows what it is told, and a plain 0 with no new report
+            # reads as a failure on a run that was merely stood down.
+            exit 2
         }
         Log 'stale lock removed'
         Remove-Item $lock -Force -ErrorAction SilentlyContinue

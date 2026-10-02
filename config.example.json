@@ -11,6 +11,7 @@
   "redact": true,
   "custom_format": false,
   "custom_rules": false,
+  "custom_samples": false,
   "backfill_days": 2,
   "retain_months": 0,
   "utc_offset_hours": null,
