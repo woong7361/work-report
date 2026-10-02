@@ -1,0 +1,106 @@
+<!doctype html><html lang="ko"><head>
+<meta charset="utf-8"><title>{{TITLE}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/page/app.css">
+</head><body>
+<div class="app">
+
+  <header class="appbar">
+    <button class="iconbtn" id="toggleSide" title="목록 접기 (Ctrl+\)">
+      <svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 5.5h14M3 10h14M3 14.5h14"/></svg>
+    </button>
+    <button class="home" id="home" title="가장 최근 보고서로">
+      <img class="logo" src="/favicon.ico" alt="">
+      <span class="brand">work-report</span>
+    </button>
+    <span class="grow"></span>
+    <button class="iconbtn" id="theme" title="화면 밝기"></button>
+    <span class="sep"></span>
+    <span class="make">
+      <button id="runDaily">일일보고 만들기</button>
+      <button id="runWeekly">주간보고 만들기</button>
+    </span>
+  </header>
+
+  <div class="main">
+    <nav class="side" id="side">
+      <div class="searchbox">
+        <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="9" r="5.5"/><path d="M13.2 13.2 17 17" stroke-linecap="round"/></svg>
+        <input id="q" type="text" placeholder="날짜로 찾기  (/)" spellcheck="false" autocomplete="off">
+        <button id="clearq" title="지우기" hidden>
+          <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 5l10 10M15 5L5 15"/></svg>
+        </button>
+      </div>
+      <div class="navscroll" id="files"></div>
+      <div class="navfoot">
+        <button class="navitem" id="tabSetup">
+          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5l4 4 8-9"/></svg>
+          시작하기
+        </button>
+        <button class="navitem" id="tabReadme">
+          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="7.2"/><path d="M10 9v5" stroke-linecap="round"/><circle cx="10" cy="6.4" r=".9" fill="currentColor" stroke="none"/></svg>
+          사용 설명
+        </button>
+        <button class="navitem" id="tabConfig">
+          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.6v2.2M10 15.2v2.2M17.4 10h-2.2M4.8 10H2.6M15.2 4.8l-1.6 1.6M6.4 13.6l-1.6 1.6M15.2 15.2l-1.6-1.6M6.4 6.4 4.8 4.8" stroke-linecap="round"/></svg>
+          설정
+        </button>
+        <div id="customBox"></div>
+      </div>
+    </nav>
+
+    <section class="doc">
+      <div class="doctop">
+        <span class="flip" id="flip">
+          <button class="iconbtn" id="prev" title="이전 날짜 ([)">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5 6.5 10l5.5 5.5"/></svg>
+          </button>
+          <button class="iconbtn" id="next" title="다음 날짜 (])">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4.5 13.5 10 8 15.5"/></svg>
+          </button>
+        </span>
+        <div class="titlebox">
+          <h1 class="doctitle" id="docTitle">work-report</h1>
+          <div class="docsub" id="docSub"></div>
+        </div>
+        <div class="docacts">
+          <span class="state" id="state"></span>
+          <span class="seg" id="seg">
+            <button class="on" id="tabPreview">미리보기</button>
+            <button id="tabRaw">원문</button>
+          </span>
+          <button id="edit">고치기</button>
+          <button id="cancel" hidden>되돌리기</button>
+          <button id="save" class="solid" hidden>저장</button>
+          <button id="confSave" class="solid" hidden>설정 저장</button>
+          <button id="copy" class="quiet" hidden>복사</button>
+          <button id="pmsFill" class="solid" hidden>PMS에 채우기</button>
+          <button id="submit" class="solid" hidden>{{SUBMIT_LABEL}}</button>
+        </div>
+      </div>
+      <div class="rel" id="rel" hidden></div>
+      <div class="sheet" id="sheet">
+        <div class="wrap">
+          <div class="paper" id="paper">
+            <div class="body" id="view"></div>
+            <pre class="raw" id="rawView" hidden></pre>
+          </div>
+          <div class="editor" id="editor" hidden>
+            <div class="pane src"><textarea id="src" class="mono" spellcheck="false"></textarea></div>
+            <div class="pane live">
+              <div class="livehead">미리보기</div>
+              <div class="body" id="liveView"></div>
+            </div>
+          </div>
+          <div class="body conf" id="confView" hidden></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div id="jobs"></div>
+
+<script src="/page/app.js"></script>
+</body></html>
