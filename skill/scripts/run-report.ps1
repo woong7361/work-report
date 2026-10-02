@@ -35,6 +35,14 @@ function Log([string]$line) { "[{0}] $line" -f (Get-Date -Format 'HH:mm:ss') | A
 
 $msg = Get-Messages
 
+function Get-Prompts {
+    $path = Join-Path (Join-Path (Get-SkillRoot) 'prompts') 'ask.json'
+    try { return Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json }
+    catch { return $null }
+}
+
+$prompts = Get-Prompts
+
 function Get-WeeklyRange {
     # The reporting week ends on a fixed weekday and spans a fixed number of days.
     # Default: Thursday through the following Wednesday (five working days).
@@ -87,20 +95,16 @@ function Invoke-Report {
     $rangeText = if ($RangeFrom -eq $RangeTo) { $RangeFrom } else { "$RangeFrom ~ $RangeTo" }
 
     # The agent is told what to do, not how; SKILL.md holds the procedure.
-    if ($Mode -eq 'daily') {
-        $ask = "daily work report for $RangeFrom. Run the collector, write the work log, then the submission report. Print the saved paths."
-    }
-    else {
-        $ask = "weekly work report covering $RangeFrom to $RangeTo. Reuse the daily work logs in log/ and collect only the missing days. Print the saved paths."
-    }
+    $ask = [string]$prompts.modes.$Mode
+    $ask = $ask.Replace('{from}', $RangeFrom).Replace('{to}', $RangeTo)
     # Hand over the exact files to follow. Leaving the agent to find them means
     # a silent miss when it decides not to look.
     $fmt = Get-FormatFile -Name 'report-format.md' -Root $root -Config $cfg -Flag 'custom_format'
     $rules = Get-FormatFile -Name 'writing-rules.md' -Root $root -Config $cfg -Flag 'custom_rules'
     $samples = Get-SampleFile -Root $root -Config $cfg
-    if ($fmt) { $ask += " Report format: `"$fmt`"." }
-    if ($rules) { $ask += " Writing rules: `"$rules`"." }
-    if ($samples) { $ask += " My past reports (style examples only, never a source of content): `"$samples`"." }
+    if ($fmt) { $ask += ' ' + ([string]$prompts.files.report_format).Replace('{path}', $fmt) }
+    if ($rules) { $ask += ' ' + ([string]$prompts.files.writing_rules).Replace('{path}', $rules) }
+    if ($samples) { $ask += ' ' + ([string]$prompts.files.samples).Replace('{path}', $samples) }
     # Counted facts about how the person has filled the submission form before.
     # Written by pms.ps1 -Fetch; absent until that has run, and absent for anyone
     # who does not use the form. Passed only when it exists, like the files above.
@@ -113,12 +117,12 @@ function Invoke-Report {
         try { & (Join-Path $PSScriptRoot 'pms.ps1') -Issues -Root $root | Out-Null }
         catch { Log "  issues: $($_.Exception.Message)" }
     }
-    if (Test-Path $issues) { $ask += " Issues I can link: `"$issues`"." } else { $issues = $null }
+    if (Test-Path $issues) { $ask += ' ' + ([string]$prompts.files.issues).Replace('{path}', $issues) } else { $issues = $null }
 
     $patterns = Join-Path $root 'pms\patterns.md'
-    if (Test-Path $patterns) { $ask += " How I have filled it before (counted, not rules): `"$patterns`"." }
+    if (Test-Path $patterns) { $ask += ' ' + ([string]$prompts.files.patterns).Replace('{path}', $patterns) }
     else { $patterns = $null }
-    if ($fmt -or $rules -or $samples -or $patterns -or $issues) { $ask += ' Read those files first and follow them exactly.' }
+    if ($fmt -or $rules -or $samples -or $patterns -or $issues) { $ask += [string]$prompts.read_first }
 
     # The skill may be installed under another name to avoid a clash, so take
     # the name from the folder this script sits in rather than assuming it.

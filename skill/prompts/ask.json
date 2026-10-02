@@ -1,0 +1,14 @@
+{
+  "modes": {
+    "daily": "daily work report for {from}. Run the collector, write the work log, then the submission report. Print the saved paths.",
+    "weekly": "weekly work report covering {from} to {to}. Reuse the daily work logs in log/ and collect only the missing days. Print the saved paths."
+  },
+  "files": {
+    "report_format": "Report format: \"{path}\".",
+    "writing_rules": "Writing rules: \"{path}\".",
+    "samples": "My past reports (style examples only, never a source of content): \"{path}\".",
+    "issues": "Issues I can link: \"{path}\".",
+    "patterns": "How I have filled it before (counted, not rules): \"{path}\"."
+  },
+  "read_first": " Read those files first and follow them exactly."
+}
