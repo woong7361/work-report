@@ -191,6 +191,21 @@ def asset_path(name):
 ICON_PATH = asset_path('work-report.ico')
 
 
+def made_since(root, area, since):
+    """그 시각 뒤에 새로 쓰인 산출물. 빠진 날을 채우는 실행은 여럿을 쓴다."""
+    base = os.path.join(root, area)
+    out = []
+    for dirpath, _dirs, names in os.walk(base):
+        for name in names:
+            if not name.endswith('.md'):
+                continue
+            full = os.path.join(dirpath, name)
+            if os.path.getmtime(full) > since:
+                out.append(os.path.relpath(full, root).replace(os.sep, '/'))
+    out.sort()
+    return out
+
+
 def newest_under(root, area, since):
     """작업이 끝난 뒤 무엇이 만들어졌는지 찾는다."""
     base = os.path.join(root, area)
@@ -204,6 +219,46 @@ def newest_under(root, area, since):
             if at > best_at:
                 best, best_at = full, at
     return best
+
+
+def job_phase(root, since):
+    """지금 어느 대목인지. 러너는 진행을 알려 주지 않으므로 산출물로 읽는다.
+
+    수집이 끝나면 raw\\ 에 그 구간의 파일이 먼저 생기고, 보고서는 그 뒤에
+    쓰인다. 초만 세는 카드로는 1~3분 동안 멈춘 것인지 알 수 없다.
+    """
+    return 'write' if newest_under(root, 'raw', since) else 'collect'
+
+
+# 러너가 "한 번에 하나만"을 지키려고 두는 자리. 45분은 러너가 낡은 잠금으로
+# 보고 치우는 기준과 같은 값이다.
+LOCK_STALE = 45 * 60
+
+
+def scheduled_job(root):
+    """작업 스케줄러가 돌리는 실행. 화면이 띄운 것이 아니라 목록에 없다.
+
+    이것이 없으면 17:30에 보고서가 만들어지는 동안 화면은 아무 말도 하지
+    않고, 그 사이에 누른 만들기는 "건너뜀"으로만 끝난다.
+    """
+    lock = os.path.join(root, 'runlog', '.running')
+    try:
+        started = os.path.getmtime(lock)
+    except OSError:
+        return None
+    if time.time() - started > LOCK_STALE:
+        return None
+    mode = 'daily'
+    try:
+        with io.open(lock, encoding='utf-8-sig') as fh:
+            parts = fh.read().split()
+        if len(parts) > 1 and parts[1] in ('daily', 'weekly'):
+            mode = parts[1]
+    except (OSError, ValueError):
+        pass
+    return {'id': 'scheduled', 'mode': mode, 'state': 'running', 'external': True,
+            'phase': job_phase(root, started), 'seconds': int(time.time() - started),
+            'path': None, 'paths': []}
 
 
 bins_cache = None
@@ -260,7 +315,7 @@ def start_job(root, mode):
     job_id = '%s-%d' % (mode, int(started * 1000))
     with jobs_lock:
         jobs[job_id] = {'id': job_id, 'mode': mode, 'started': started,
-                        'proc': proc, 'state': 'running', 'path': None}
+                        'proc': proc, 'state': 'running', 'path': None, 'paths': []}
     return job_id
 
 
@@ -280,22 +335,34 @@ def drop_job(job_id):
 
 def job_status(root):
     out = []
+    mine_running = False
     with jobs_lock:
         for job in jobs.values():
             if job['state'] == 'running':
                 code = job['proc'].poll()
-                if code is not None:
-                    made = newest_under(root, job['mode'], job['started'])
+                if code is None:
+                    mine_running = True
+                else:
+                    made = made_since(root, job['mode'], job['started'])
                     # 2는 러너가 "다른 실행이 도는 중이라 물러났다"고 말하는 값이다.
                     # 쓴 것이 없다는 점은 실패와 같지만 실패가 아니다.
                     if code == 2 and not made:
                         job['state'] = 'skipped'
                     else:
                         job['state'] = 'done' if (code == 0 and made) else 'failed'
-                    if made:
-                        job['path'] = os.path.relpath(made, root).replace(os.sep, '/')
-            out.append({'id': job['id'], 'mode': job['mode'], 'state': job['state'],
-                        'seconds': int(time.time() - job['started']), 'path': job['path']})
+                    job['paths'] = made
+                    job['path'] = made[0] if made else None
+            row = {'id': job['id'], 'mode': job['mode'], 'state': job['state'],
+                   'seconds': int(time.time() - job['started']),
+                   'path': job['path'], 'paths': job.get('paths') or []}
+            if job['state'] == 'running':
+                row['phase'] = job_phase(root, job['started'])
+            out.append(row)
+    # 내가 띄운 실행이 도는 중이면 잠금도 그것의 것이라 두 번 보일 이유가 없다
+    if not mine_running:
+        ext = scheduled_job(root)
+        if ext:
+            out.append(ext)
     return out
 
 
@@ -365,20 +432,16 @@ def html_escape(s):
 
 
 def build_page(title, submit_url, submit_label, has_readme):
-    submit_button = ''
-    if submit_url:
-        submit_button = ('<button id="submit" class="primary">%s</button>'
-                         % html_escape(submit_label))
     return (PAGE.replace('{{TITLE}}', html_escape(title))
-            .replace('{{SUBMIT_BUTTON}}', submit_button)
             .replace('{{SUBMIT_URL}}', html_escape(submit_url or ''))
-            .replace('{{README_TAB}}',
-                     '<button class="navitem" id="tabReadme"><span class="ic">&#9432;</span>사용 설명</button>' if has_readme else ''))
+            .replace('{{SUBMIT_LABEL}}', html_escape(submit_label or '제출하러 가기'))
+            .replace('{{HAS_README}}', 'true' if has_readme else 'false'))
 
 
 PAGE = r"""<!doctype html>
 <html lang="ko"><head>
 <meta charset="utf-8"><title>{{TITLE}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/favicon.ico">
 <style>
 /* ============================================================== 글꼴
@@ -394,58 +457,73 @@ PAGE = r"""<!doctype html>
 
 /* ============================================================== 토큰
    화면에 쓰이는 값은 전부 여기서 나온다. 크기나 여백을 바꿀 일이 생기면
-   규칙을 찾아다니지 말고 이 표를 고친다. */
-:root {
-  /* 색 */
-  --bg:#f5f6f8; --panel:#ffffff; --soft:#f2f4f7; --line:#e3e6ea;
-  --text:#17191c; --muted:#616a75; --faint:#949ca8;
-  --ink:#2b3036;     /* 본문 글자. 화면 글자보다 한 단 옅다 */
-  --accent:#2563eb; --accent-soft:#eef3ff; --accent-line:#cfdffb;
-  --ok:#15803d; --bad:#dc2626;
-  --scroll:#c8cfd9; --scroll-hover:#a7b1bf;
+   규칙을 찾아다니지 말고 이 표를 고친다.
 
-  /* 글꼴 */
+   색은 따뜻한 중성색 한 벌에 잉크색 하나만 더한 구성이다. 이 화면이 하루에
+   하는 일은 문서 한 장을 읽히는 것인데, 색이 여럿이면 문서보다 화면이 먼저
+   보인다. 강조색은 지금 고른 것과 지금 누를 것에만 쓴다. */
+:root {
+  --bg:#f5f4f1; --panel:#ffffff; --soft:#efede8; --line:#e2dfd8; --hair:#edeae4;
+  --text:#1b1a17; --ink:#302e29; --muted:#6a655c; --faint:#97918a;
+  --accent:#3a5a8c; --accent-soft:#eaeff7; --accent-line:#c6d5e8;
+  --solid:#262420; --solid-hi:#3a372f; --on-solid:#ffffff;
+  --ok:#3f7a4a; --bad:#a9442f; --warn:#8a6a1f;
+  --scroll:#cfcbc2; --scroll-hover:#aea89d;
+
   --font:'Pretendard',-apple-system,"Segoe UI","Malgun Gothic",system-ui,sans-serif;
   --font-mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
 
   /* 글자 크기 - 여섯 단만 쓴다 */
-  --fs-100:12.5px;   /* 꼬리표, 보조 설명 */
-  --fs-200:14px;     /* 목록, 단추, 라벨 */
-  --fs-300:15.5px;   /* 본문 */
-  --fs-400:17px;     /* 작은 제목 */
-  --fs-500:19px;     /* 절 제목, 문서 이름 */
-  --fs-600:26px;     /* 문서 제목 */
-  --fs-mono:14px;
+  --fs-100:12px;     /* 꼬리표, 보조 설명 */
+  --fs-200:13.5px;   /* 목록, 단추, 라벨 */
+  --fs-300:15px;     /* 본문 */
+  --fs-400:16.5px;   /* 작은 제목 */
+  --fs-500:19px;     /* 절 제목 */
+  --fs-600:27px;     /* 문서 제목 */
+  --fs-mono:13.5px;
 
-  --lh-tight:1.4;
-  --lh-body:1.72;
+  --lh-tight:1.35;
+  --lh-body:1.75;
   --fw-normal:400;
-  --fw-medium:550;
+  --fw-medium:530;
   --fw-bold:650;
 
-  /* 간격 */
   --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px;
   --sp-5:20px; --sp-6:24px; --sp-8:32px;
 
-  /* 모양 */
-  --r-sm:6px; --r-md:9px; --r-lg:12px; --r-pill:999px;
-  --shadow-1:0 1px 2px rgba(16,24,40,.06);
-  --shadow-2:0 8px 24px rgba(16,24,40,.14);
+  /* 종이는 모서리를 깎지 않는다. 둥근 카드가 늘어서면 문서가 위젯처럼 보인다 */
+  --r-sm:3px; --r-md:5px; --r-lg:7px; --r-pill:999px;
+  --shadow-1:0 1px 1px rgba(28,25,20,.05);
+  --shadow-2:0 10px 30px rgba(28,25,20,.16);
 
-  /* 치수 */
-  --rail:252px;       /* 왼쪽 목록 */
-  --topbar:58px;
-  --measure:880px;    /* 본문이 넘지 않는 폭 */
-  --label:196px;      /* 설정 라벨 칸 */
+  --rail:244px;
+  --topbar:52px;
+  --measure:820px;
+  --label:172px;
+}
+
+/* 어두운 화면. OS를 따르되 위 막대의 단추로 손수 고를 수 있다 */
+:root[data-theme="dark"] {
+  --bg:#131210; --panel:#1b1a17; --soft:#232120; --line:#302d28; --hair:#262320;
+  --text:#edeae4; --ink:#d9d5cd; --muted:#9c968b; --faint:#6f6a61;
+  --accent:#7ea4d6; --accent-soft:#1a222c; --accent-line:#32465e;
+  --solid:#e9e5dd; --solid-hi:#fffcf6; --on-solid:#1b1a17;
+  --ok:#6fbb7c; --bad:#dd8c78; --warn:#d2ab57;
+  --scroll:#3b3832; --scroll-hover:#524d45;
+  --shadow-1:0 1px 1px rgba(0,0,0,.4);
+  --shadow-2:0 10px 30px rgba(0,0,0,.55);
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg:#0f1115; --panel:#161a20; --soft:#1c2128; --line:#282e37;
-          --text:#e7eaee; --muted:#a2abb7; --faint:#717b88; --ink:#d3dae3;
-          --accent:#4d8bf5; --accent-soft:#182337; --accent-line:#2c4573;
-          --scroll:#39414d; --scroll-hover:#4d5766;
-          --ok:#4ade80; --bad:#f87171;
-          --shadow-1:0 1px 2px rgba(0,0,0,.4);
-          --shadow-2:0 8px 24px rgba(0,0,0,.5); }
+  :root:not([data-theme="light"]) {
+    --bg:#131210; --panel:#1b1a17; --soft:#232120; --line:#302d28; --hair:#262320;
+    --text:#edeae4; --ink:#d9d5cd; --muted:#9c968b; --faint:#6f6a61;
+    --accent:#7ea4d6; --accent-soft:#1a222c; --accent-line:#32465e;
+    --solid:#e9e5dd; --solid-hi:#fffcf6; --on-solid:#1b1a17;
+    --ok:#6fbb7c; --bad:#dd8c78; --warn:#d2ab57;
+    --scroll:#3b3832; --scroll-hover:#524d45;
+    --shadow-1:0 1px 1px rgba(0,0,0,.4);
+    --shadow-2:0 10px 30px rgba(0,0,0,.55);
+  }
 }
 
 /* ============================================================== 바탕 */
@@ -453,8 +531,8 @@ PAGE = r"""<!doctype html>
 [hidden] { display:none !important; }
 
 /* 스크롤 막대. 기본 막대는 폭이 넓고 회색이 짙어 본문보다 먼저 눈에 들어온다.
-   여백 안에 가느다란 알약 하나만 남긴다. */
-/* 크롬은 표준 scrollbar-width가 있으면 아래 규칙을 통째로 무시하고 제 막대를
+   여백 안에 가느다란 알약 하나만 남긴다.
+   크롬은 표준 scrollbar-width가 있으면 아래 규칙을 통째로 무시하고 제 막대를
    그린다. 그래서 표준 속성은 그 규칙을 모르는 쪽(파이어폭스)에만 준다. */
 @supports not selector(::-webkit-scrollbar) {
   * { scrollbar-width:thin; scrollbar-color:var(--scroll) transparent; }
@@ -465,125 +543,122 @@ PAGE = r"""<!doctype html>
                              border:3px solid transparent; background-clip:content-box; }
 *::-webkit-scrollbar-thumb:hover { background:var(--scroll-hover); background-clip:content-box; }
 *::-webkit-scrollbar-corner { background:transparent; }
-/* Windows 크롬이 막대 양 끝에 붙이는 화살표 단추 */
 *::-webkit-scrollbar-button { display:none; width:0; height:0; }
+
 html, body { height:100%; }
 body { margin:0; background:var(--bg); color:var(--text);
        font-family:var(--font); font-size:var(--fs-300); line-height:var(--lh-body);
        -webkit-font-smoothing:antialiased; }
-pre, code, textarea.src { font-family:var(--font-mono); }
+pre, code, textarea.mono { font-family:var(--font-mono); }
+/* 날짜가 세로로 줄지어 선다. 자릿수가 흔들리면 목록이 읽히지 않는다 */
+.num { font-variant-numeric:tabular-nums; }
+svg { display:block; flex:0 0 auto; }
 
 /* ============================================================== 컴포넌트
    여기 있는 것만 쓴다. 화면마다 새 모양을 만들지 않는다.
-     단추 .btn / .btn.primary / .btn.quiet / .btn.icon
+     단추 button / .solid / .quiet / .iconbtn
      고르개 .seg          카드 .card         꼬리표 .chip
-     입력 .input .switch  줄 .field          구역 제목 .sectitle
+     입력 input .switch   줄 .field          구역 제목 .sectitle
      목록 항목 .navitem .doclink             알림 .job                     */
 
-/* -- 단추 ---------------------------------------------------------- */
-button, .btn {
+button {
+  display:inline-flex; align-items:center; gap:var(--sp-2);
   font-family:inherit; font-size:var(--fs-200); font-weight:var(--fw-medium);
   line-height:1.4; cursor:pointer; white-space:nowrap;
-  padding:var(--sp-2) var(--sp-3); border-radius:var(--r-md);
+  padding:6px var(--sp-3); border-radius:var(--r-md);
   border:1px solid var(--line); background:var(--panel); color:var(--text);
-  transition:background .1s, border-color .1s, filter .1s;
+  transition:background .1s, border-color .1s, color .1s;
 }
-button:hover, .btn:hover { background:var(--soft); }
-button:focus-visible, .btn:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
-button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-button.primary:hover { background:var(--accent); filter:brightness(1.08); }
-/* 아주 옅은 강조. 제출(꽉 찬 색)보다 한 단 아래, 보통 단추보다 한 단 위 */
-button.tint { background:var(--accent-soft); border-color:var(--accent-line); color:var(--accent); }
-button.tint:hover { background:var(--accent-soft); filter:brightness(.97); }
+button:hover { background:var(--soft); border-color:var(--scroll); }
+button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+button:disabled { opacity:.4; cursor:default; }
+button:disabled:hover { background:var(--panel); border-color:var(--line); }
+/* 그 화면에서 결론이 되는 동작 하나에만 쓴다. 색이 아니라 농도로 구분한다 */
+button.solid { background:var(--solid); border-color:var(--solid); color:var(--on-solid); }
+button.solid:hover { background:var(--solid-hi); border-color:var(--solid-hi); }
 button.quiet { border-color:transparent; background:transparent; color:var(--muted); }
-button.quiet:hover { background:var(--soft); color:var(--text); }
-button.iconbtn { padding:var(--sp-2); border-color:transparent; background:transparent;
-                 color:var(--muted); font-size:var(--fs-400); line-height:1; }
-button.iconbtn:hover { background:var(--soft); color:var(--text); }
+button.quiet:hover { background:var(--soft); border-color:transparent; color:var(--text); }
+button.iconbtn { padding:6px; border-color:transparent; background:transparent; color:var(--muted); }
+button.iconbtn:hover { background:var(--soft); border-color:transparent; color:var(--text); }
 
-/* -- 고르개 (표현 방식처럼 서로 배타적인 선택) ----------------------- */
-.seg { display:inline-flex; gap:2px; padding:3px; border-radius:var(--r-md);
+.seg { display:inline-flex; gap:2px; padding:2px; border-radius:var(--r-md);
        background:var(--soft); border:1px solid var(--line); }
 .seg button { border:0; background:transparent; color:var(--muted);
-              padding:var(--sp-1) var(--sp-3); border-radius:var(--r-sm);
+              padding:3px var(--sp-3); border-radius:var(--r-sm);
               font-weight:var(--fw-normal); }
 .seg button:hover { background:transparent; color:var(--text); }
 .seg button.on { background:var(--panel); color:var(--text);
                  font-weight:var(--fw-bold); box-shadow:var(--shadow-1); }
 
-/* -- 카드 ---------------------------------------------------------- */
 .card { background:var(--panel); border:1px solid var(--line);
-        border-radius:var(--r-lg); padding:var(--sp-1) var(--sp-5) var(--sp-4);
+        border-radius:var(--r-lg); padding:var(--sp-2) var(--sp-5) var(--sp-4);
         margin:0 0 var(--sp-4); }
 
-/* -- 꼬리표 -------------------------------------------------------- */
 .chip { flex:0 0 auto; font-size:var(--fs-100); font-weight:var(--fw-normal);
         color:var(--faint); background:var(--soft);
         border-radius:var(--r-pill); padding:1px var(--sp-2); }
 
-/* -- 입력 ---------------------------------------------------------- */
 input[type=text], input[type=number], select, textarea {
   font-family:inherit; font-size:var(--fs-200); line-height:1.5;
-  padding:var(--sp-2) var(--sp-3); border:1px solid var(--line);
+  padding:6px var(--sp-3); border:1px solid var(--line);
   border-radius:var(--r-md); background:var(--bg); color:var(--text); width:100%;
 }
 input:focus, select:focus, textarea:focus {
   outline:2px solid var(--accent); outline-offset:-1px; border-color:transparent; }
 /* 값의 길이에 맞춘다. 네 글자를 받는 칸이 화면을 가로지르지 않게 */
-.short { max-width:210px; }
-.mid   { max-width:360px; }
-.long  { max-width:480px; }
-input[type=number] { width:104px; }
-select { max-width:210px; }
-textarea.lines { max-width:440px; min-height:82px; resize:vertical;
+.short { max-width:200px; }
+.mid   { max-width:340px; }
+.long  { max-width:470px; }
+input[type=number] { width:100px; }
+select { max-width:200px; }
+textarea.lines { max-width:430px; min-height:78px; resize:vertical;
                  font-family:var(--font-mono); font-size:var(--fs-mono); }
-/* 켬/끔은 라벨 바로 옆에 붙어야 무엇의 켬인지 읽힌다 */
-.switch { justify-self:start; position:relative; width:42px; height:24px; padding:0;
+.switch { justify-self:start; position:relative; width:38px; height:22px; padding:0;
           -webkit-appearance:none; appearance:none; cursor:pointer; border:0;
           background:var(--line); border-radius:var(--r-pill); transition:background .15s; }
 .switch::after { content:""; position:absolute; top:3px; left:3px;
-                 width:18px; height:18px; border-radius:50%; background:#fff;
-                 box-shadow:0 1px 2px rgba(0,0,0,.25); transition:left .15s; }
+                 width:16px; height:16px; border-radius:50%; background:#fff;
+                 box-shadow:0 1px 2px rgba(0,0,0,.3); transition:left .15s; }
 .switch:checked { background:var(--accent); }
-.switch:checked::after { left:21px; }
+.switch:checked::after { left:19px; }
 
-/* -- 설정 한 줄 ---------------------------------------------------- */
-.field { display:grid; grid-template-columns:var(--label) minmax(0,1fr);
-         gap:var(--sp-1) var(--sp-5); align-items:center;
-         padding:var(--sp-3) 0; border-top:1px solid var(--line); }
-.card > .field:first-child { border-top:0; }
+.field { display:grid; grid-template-columns:minmax(0,var(--label)) minmax(0,1fr);
+         gap:var(--sp-1) var(--sp-4); align-items:center;
+         padding:var(--sp-3) 0; border-top:1px solid var(--hair); }
+.card > .field:first-child, .card > h3 + .field { border-top:0; }
 .field label { font-size:var(--fs-300); color:var(--text); }
+.field .with { display:flex; align-items:center; gap:var(--sp-3); min-width:0; }
 .hint { grid-column:2; font-size:var(--fs-100); color:var(--faint);
-        white-space:pre-line; }
+        white-space:pre-line; line-height:1.6; }
 
-/* -- 구역 제목 ----------------------------------------------------- */
-.sectitle { padding:var(--sp-3) var(--sp-3) var(--sp-1);
+.sectitle { padding:var(--sp-4) var(--sp-3) var(--sp-1);
             font-size:var(--fs-100); font-weight:var(--fw-bold);
-            letter-spacing:.06em; color:var(--faint); }
+            letter-spacing:.07em; color:var(--faint); }
 
-/* -- 목록 항목 ----------------------------------------------------- */
 .navitem { display:flex; align-items:center; gap:var(--sp-2); width:100%;
-           padding:var(--sp-2) var(--sp-3); border:0; border-radius:var(--r-md);
+           padding:6px var(--sp-3); border:0; border-radius:var(--r-md);
            background:transparent; color:var(--muted);
            font-size:var(--fs-200); font-weight:var(--fw-normal); text-align:left; }
-.navitem:hover { background:var(--soft); color:var(--text); }
-.navitem.on { background:var(--accent-soft); color:var(--accent); font-weight:var(--fw-bold); }
-.navitem .ic { width:15px; text-align:center; opacity:.85; }
+.navitem:hover { background:var(--soft); color:var(--text); border-color:transparent; }
+.navitem.on { background:var(--accent-soft); color:var(--text); font-weight:var(--fw-bold);
+              box-shadow:inset 2px 0 0 var(--accent); }
 
+/* 지금 고른 것은 채운 색이 아니라 왼쪽 선으로 말한다. 목록이 길어도 파란
+   알약이 줄줄이 켜지지 않고 글자가 그대로 읽힌다 */
 .doclink { display:flex; align-items:center; gap:var(--sp-2);
-           padding:var(--sp-1) var(--sp-3) var(--sp-1) var(--sp-8);
-           border-radius:var(--r-md); color:var(--text); text-decoration:none;
+           padding:3px var(--sp-3) 3px var(--sp-6);
+           border-radius:var(--r-md); color:var(--ink); text-decoration:none;
            font-size:var(--fs-200); white-space:nowrap;
            overflow:hidden; text-overflow:ellipsis; }
 .doclink:hover { background:var(--soft); }
-.doclink.on { background:var(--accent-soft); color:var(--accent); font-weight:var(--fw-bold); }
+.doclink.on { background:var(--accent-soft); color:var(--text); font-weight:var(--fw-bold);
+              box-shadow:inset 2px 0 0 var(--accent); }
 .doclink .chip { margin-left:auto; }
-.doclink.on .chip { background:var(--panel); }
+.doclink.on .chip { background:var(--panel); color:var(--muted); }
 .recent .doclink { padding-left:var(--sp-3); }
 
-/* -- 알림 카드 ----------------------------------------------------- */
 #jobs { position:fixed; right:var(--sp-5); bottom:var(--sp-5); z-index:30;
-        display:flex; flex-direction:column; gap:var(--sp-3); width:320px; }
+        display:flex; flex-direction:column; gap:var(--sp-2); width:330px; }
 .job { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-lg);
        padding:var(--sp-3) var(--sp-4); box-shadow:var(--shadow-2);
        font-size:var(--fs-200); animation:rise .18s ease-out; }
@@ -591,186 +666,272 @@ textarea.lines { max-width:440px; min-height:82px; resize:vertical;
 .job .row { display:flex; align-items:center; gap:var(--sp-2); }
 .job .what { font-weight:var(--fw-bold); }
 .job .time { margin-left:auto; color:var(--faint); font-size:var(--fs-100); }
-.job .x { cursor:pointer; color:var(--faint); padding:0 2px; }
-.job .x:hover { color:var(--text); }
-.job .bar { height:3px; border-radius:2px; background:var(--soft);
+.job .x { padding:2px; border:0; background:transparent; color:var(--faint);
+          border-radius:var(--r-sm); }
+.job .x:hover { background:var(--soft); color:var(--text); border-color:transparent; }
+.job .bar { height:2px; border-radius:2px; background:var(--soft);
             margin-top:var(--sp-3); overflow:hidden; }
 .job .bar i { display:block; height:100%; width:35%; background:var(--accent);
               animation:slide 1.2s ease-in-out infinite; }
 @keyframes slide { 0% { margin-left:-35%; } 100% { margin-left:100%; } }
-.job .dot { width:8px; height:8px; border-radius:50%; flex:0 0 8px; }
+.job .dot { width:7px; height:7px; border-radius:50%; flex:0 0 7px; background:var(--faint); }
 .job.done .dot { background:var(--ok); }
 .job.failed .dot { background:var(--bad); }
-.job.skipped .dot { background:var(--faint); }
 .job .note { margin-top:var(--sp-2); color:var(--muted); font-size:var(--fs-100); }
-.job a { color:var(--accent); text-decoration:none; word-break:break-all; }
-.job a:hover { text-decoration:underline; }
+.job .note a { display:block; color:var(--accent); text-decoration:none; padding:1px 0; }
+.job .note a:hover { text-decoration:underline; }
 
 /* ============================================================== 뼈대
    화면은 세 층이다. 위 막대는 "만드는 일", 왼쪽 레일은 "어디로 갈지",
    오른쪽은 문서 한 장과 그 문서에 하는 일. 층이 나뉘어 있어야 지금 누르는
    단추가 무엇에 작용하는지 헷갈리지 않는다. */
 .app { display:flex; flex-direction:column; height:100%; }
-.main { flex:1 1 auto; display:flex; min-height:0; }
+.main { flex:1 1 auto; display:flex; min-height:0; position:relative; }
 
-.appbar { flex:0 0 auto; display:flex; align-items:center; gap:var(--sp-3);
-          height:var(--topbar); padding:0 var(--sp-4) 0 var(--sp-2);
+.appbar { flex:0 0 auto; display:flex; align-items:center; gap:var(--sp-2);
+          height:var(--topbar); padding:0 var(--sp-3) 0 var(--sp-2);
           background:var(--panel); border-bottom:1px solid var(--line); }
-.appbar .home { display:flex; align-items:center; gap:var(--sp-2);
-                padding:var(--sp-1) var(--sp-2); border-color:transparent;
-                background:transparent; }
-.appbar .home:hover { background:var(--soft); }
-.appbar .logo { width:22px; height:22px; border-radius:var(--r-sm); display:block; }
+.appbar .home { padding:var(--sp-1) var(--sp-2); border-color:transparent; background:transparent; }
+.appbar .home:hover { background:var(--soft); border-color:transparent; }
+.appbar .logo { width:20px; height:20px; border-radius:var(--r-sm); display:block; }
 .appbar .brand { font-size:var(--fs-300); font-weight:var(--fw-bold); letter-spacing:-.01em; }
 .appbar .grow { margin-left:auto; }
+.appbar .sep { width:1px; height:20px; background:var(--line); margin:0 var(--sp-1); }
 .appbar .make { display:flex; gap:var(--sp-2); }
-.appbar .make button::before { content:"+"; margin-right:var(--sp-2);
-                               opacity:.6; font-weight:var(--fw-bold); }
 
 nav.side { flex:0 0 var(--rail); width:var(--rail); min-height:0;
            display:flex; flex-direction:column;
            background:var(--panel); border-right:1px solid var(--line); }
 nav.side.hide { display:none; }
+.searchbox { flex:0 0 auto; display:flex; align-items:center; gap:var(--sp-2);
+             margin:var(--sp-3) var(--sp-3) var(--sp-1); padding:0 var(--sp-2);
+             border:1px solid var(--line); border-radius:var(--r-md);
+             background:var(--bg); color:var(--faint); }
+.searchbox:focus-within { outline:2px solid var(--accent); outline-offset:-1px;
+                          border-color:transparent; }
+.searchbox input { border:0; outline:0; background:transparent; padding:5px 0;
+                   font-size:var(--fs-200); }
+.searchbox button { padding:2px; border:0; background:transparent; color:var(--faint); }
+.searchbox button:hover { background:transparent; color:var(--text); }
 .navscroll { flex:1 1 auto; overflow-y:auto; overflow-x:hidden;
-             padding:var(--sp-3) var(--sp-2) var(--sp-4); }
+             padding:0 var(--sp-2) var(--sp-4); }
 .navfoot { flex:0 0 auto; border-top:1px solid var(--line); padding:var(--sp-2); }
 
 .group > .head { display:flex; align-items:center; gap:var(--sp-2); width:100%;
-                 padding:var(--sp-2) var(--sp-3); border:0; border-radius:var(--r-md);
+                 padding:5px var(--sp-3); border:0; border-radius:var(--r-md);
                  background:transparent; color:var(--text);
                  font-size:var(--fs-200); font-weight:var(--fw-bold); text-align:left; }
-.group > .head:hover { background:var(--soft); }
+.group > .head:hover { background:var(--soft); border-color:transparent; }
 .group .count { margin-left:auto; color:var(--faint);
                 font-size:var(--fs-100); font-weight:var(--fw-normal); }
-.caret { width:10px; flex:0 0 10px; color:var(--faint); font-size:10px;
+.caret { width:9px; flex:0 0 9px; color:var(--faint); font-size:9px;
          transition:transform .12s; }
 .closed > .head .caret, .closed > .mhead .caret { transform:rotate(-90deg); }
 .closed > .items { display:none; }
 .month > .mhead { display:flex; align-items:center; gap:var(--sp-2); width:100%;
-                  padding:3px var(--sp-3) 3px var(--sp-6); border:0; background:transparent;
+                  padding:3px var(--sp-3) 3px var(--sp-5); border:0; background:transparent;
                   color:var(--faint); font-size:var(--fs-100); text-align:left; }
-.month > .mhead:hover { color:var(--muted); }
+.month > .mhead:hover { color:var(--muted); background:transparent; border-color:transparent; }
 
 .doc { flex:1 1 auto; display:flex; flex-direction:column; min-width:0; min-height:0; }
 .doctop { flex:0 0 auto; display:flex; align-items:center;
-          gap:var(--sp-4); flex-wrap:wrap;
-          padding:var(--sp-3) var(--sp-6);
+          gap:var(--sp-3); flex-wrap:wrap;
+          padding:var(--sp-2) var(--sp-5);
           background:var(--panel); border-bottom:1px solid var(--line); }
-.titlebox { min-width:0; margin-right:auto; }
-.doctitle { margin:0; font-size:var(--fs-500); font-weight:var(--fw-bold);
+.flip { display:flex; gap:2px; }
+.titlebox { min-width:0; margin-right:auto; padding:2px 0; }
+.doctitle { margin:0; font-size:var(--fs-400); font-weight:var(--fw-bold);
             line-height:var(--lh-tight); letter-spacing:-.015em;
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .docsub { color:var(--faint); font-size:var(--fs-100); margin-top:1px;
           white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .docacts { display:flex; align-items:center; gap:var(--sp-2); flex-wrap:wrap; }
 .state { font-size:var(--fs-100); color:var(--muted); white-space:nowrap; }
-.state.warn { color:var(--accent); font-weight:var(--fw-bold); }
+.state.warn { color:var(--warn); font-weight:var(--fw-bold); }
+.state.good { color:var(--ok); font-weight:var(--fw-bold); }
+
+/* 같은 날짜의 다른 문서로 건너가는 줄. 요약에서 빠진 근거를 되찾는 길이라
+   문서 바로 위에 둔다 */
+.rel { flex:0 0 auto; display:flex; align-items:center; gap:var(--sp-2);
+       padding:5px var(--sp-5); background:var(--bg);
+       border-bottom:1px solid var(--line); font-size:var(--fs-100); color:var(--faint); }
+.rel a { display:inline-flex; align-items:center; gap:5px; color:var(--muted);
+         text-decoration:none; padding:1px var(--sp-2); border-radius:var(--r-sm);
+         border:1px solid var(--line); background:var(--panel); }
+.rel a:hover { color:var(--text); border-color:var(--scroll); }
 
 /* 스크롤은 여기 한 곳에서만 일어난다 */
 .sheet { flex:1 1 auto; overflow-y:auto; }
 .wrap { max-width:var(--measure); margin:0 auto;
         padding:var(--sp-6) var(--sp-6) 96px; }
 
-/* 본문은 바탕 위에 놓인 종이 한 장이다. 읽을 때와 고칠 때가 같은 상자 안에서
-   일어나므로, 고치기를 눌러도 없던 테두리가 새로 생기지 않는다. */
+/* 본문은 바탕 위에 놓인 종이 한 장이다. 모서리를 깎지 않고 그림자도 거의
+   없다 - 문서처럼 꾸미는 것이 아니라 문서로 보이게 한다 */
 .paper { background:var(--panel); border:1px solid var(--line);
-         border-radius:var(--r-lg); padding:var(--sp-8);
-         transition:border-color .12s, box-shadow .12s; }
-.paper.edit { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+         border-radius:2px; padding:44px 52px; box-shadow:var(--shadow-1); }
 
 /* ============================================================== 본문 서식 */
 .body { color:var(--ink); }
 .body h1 { color:var(--text); font-size:var(--fs-600); font-weight:var(--fw-bold);
-           line-height:var(--lh-tight); letter-spacing:-.02em; margin:0 0 var(--sp-5); }
+           line-height:var(--lh-tight); letter-spacing:-.025em;
+           margin:0 0 var(--sp-5); padding-bottom:var(--sp-4);
+           border-bottom:1px solid var(--text); }
 .body h2 { color:var(--text); font-size:var(--fs-500); font-weight:var(--fw-bold);
            line-height:var(--lh-tight); margin:var(--sp-8) 0 var(--sp-3);
-           padding-bottom:var(--sp-2); border-bottom:1px solid var(--line); }
+           letter-spacing:-.01em; }
 .body h3 { font-size:var(--fs-400); font-weight:var(--fw-bold); margin:var(--sp-6) 0 var(--sp-2); }
 .body h4 { font-size:var(--fs-300); font-weight:var(--fw-bold);
            color:var(--muted); margin:var(--sp-5) 0 var(--sp-1); }
-.body p { margin:var(--sp-2) 0; }
-.body ul { margin:var(--sp-2) 0; padding-left:var(--sp-5); }
-.body li { margin:var(--sp-1) 0; }
-.body li::marker { color:var(--faint); }
-.body a { color:var(--accent); }
+.body > :first-child { margin-top:0; }
+.body p { margin:var(--sp-3) 0; }
+.body ul, .body ol { margin:var(--sp-3) 0; padding-left:1.45em; }
+.body ul ul, .body ol ol, .body ul ol, .body ol ul { margin:var(--sp-1) 0; }
+.body li { margin:3px 0; }
+.body li::marker { color:var(--faint); font-size:.9em; }
+.body a { color:var(--accent); text-underline-offset:2px; }
 .body hr { border:0; border-top:1px solid var(--line); margin:var(--sp-6) 0; }
-.body code { font-size:.9em; background:var(--soft); border:1px solid var(--line);
-             padding:.1em .38em; border-radius:var(--r-sm); }
-.body pre.code { background:var(--soft); border:1px solid var(--line);
+.body blockquote { margin:var(--sp-3) 0; padding:2px 0 2px var(--sp-4);
+                   border-left:2px solid var(--line); color:var(--muted); }
+.body code { font-size:.88em; background:var(--soft); border:1px solid var(--hair);
+             padding:.1em .36em; border-radius:var(--r-sm); }
+.body pre.code { background:var(--soft); border:1px solid var(--hair);
                  border-radius:var(--r-md); padding:var(--sp-3) var(--sp-4);
                  overflow-x:auto; font-size:var(--fs-mono); line-height:1.65; }
+.body pre.code code { background:none; border:0; padding:0; }
+
+/* 표는 세로줄을 긋지 않는다. 칸마다 테두리가 있으면 격자가 먼저 보이고
+   읽는 눈이 행을 따라가지 못한다. 가로 괘선만으로 충분하다 */
 .tablewrap { overflow-x:auto; margin:var(--sp-4) 0; }
 .body table { border-collapse:collapse; width:100%; font-size:var(--fs-200); }
-.body th, .body td { border:1px solid var(--line);
-                     padding:var(--sp-2) var(--sp-3); text-align:left; vertical-align:top; }
-.body th { background:var(--soft); color:var(--muted);
-           font-size:var(--fs-100); font-weight:var(--fw-bold); letter-spacing:.02em; }
+.body th, .body td { padding:7px var(--sp-3); text-align:left; vertical-align:top;
+                     border-bottom:1px solid var(--hair); }
+.body th { color:var(--muted); font-size:var(--fs-100); font-weight:var(--fw-bold);
+           letter-spacing:.04em; border-bottom:1px solid var(--muted); white-space:nowrap; }
+.body tbody tr:last-child td { border-bottom:1px solid var(--line); }
 /* 양 끝 칸은 보통 "구분", "상태"처럼 짧은 이름표다. 폭을 내주면 글자가
-   세로로 쪼개져 읽을 수 없게 된다. 가운데 칸이 남는 폭을 가져간다. */
-.body th:first-child, .body td:first-child,
-.body th:last-child, .body td:last-child { white-space:nowrap; width:1%; }
+   세로로 쪼개져 읽을 수 없게 된다. 가운데 칸이 남는 폭을 가져간다.
+   칸이 둘셋뿐인 표는 마지막이 짧은 이름표가 아니라 설명이다. */
+.body table:not([data-cols="2"]):not([data-cols="3"]) :is(th, td):first-child:not(.on),
+.body table:not([data-cols="2"]):not([data-cols="3"]) :is(th, td):last-child:not(.on) { white-space:nowrap; width:1%; }
+.body table[data-cols="3"] :is(th, td):first-child:not(.on) { white-space:nowrap; width:1%; }
 .body td { word-break:break-word; }
 .body td code { word-break:break-all; }
 
-/* 원문과 편집은 같은 자리에 같은 글자로 놓인다. 종이가 이미 여백과 테두리를
-   맡고 있으므로 입력칸은 아무 모양도 갖지 않는다. */
-pre.raw, textarea.src { margin:0; padding:0; border:0; background:transparent;
-                        color:var(--ink); font-size:var(--fs-mono); line-height:1.75; }
-pre.raw { white-space:pre-wrap; word-break:break-word; }
-textarea.src { display:block; width:100%; min-height:320px;
-               resize:none; outline:none; overflow:hidden; }
+/* 표 칸은 두 번 눌러 그 자리에서 고친다. 손대는 곳이 대개 칸 하나라서
+   원문을 열지 않고 끝나는 쪽이 짧다 */
+.cells td { cursor:text; }
+.cells td:hover { background:var(--accent-soft); }
+.body td.on { background:var(--panel); outline:2px solid var(--accent); outline-offset:-2px;
+              white-space:pre-wrap; }
 
-.conf .card > h3 { margin:var(--sp-4) 0 2px; font-size:var(--fs-100);
-                   font-weight:var(--fw-bold); letter-spacing:.05em; color:var(--faint); }
+pre.raw { margin:0; padding:0; border:0; background:transparent;
+          color:var(--ink); font-size:var(--fs-mono); line-height:1.8;
+          white-space:pre-wrap; word-break:break-word; }
+
+/* ============================================================== 고치는 화면
+   왼쪽 원문, 오른쪽 결과. 저장해 봐야 어떻게 보이는지 알던 것을 없앤다 */
+.sheet.editing { overflow:hidden; }
+.sheet.editing .wrap { max-width:none; height:100%; padding:0; }
+.editor { display:grid; grid-template-columns:1fr 1fr; height:100%; min-height:0; }
+.editor .pane { min-width:0; overflow:auto; }
+.editor .pane.src { overflow:hidden; background:var(--panel);
+                    border-right:1px solid var(--line); }
+.editor .pane.live { background:var(--bg); padding:var(--sp-6) var(--sp-8) 60px; }
+.editor .pane.live .body { max-width:620px; }
+.editor textarea { width:100%; height:100%; border:0; outline:none; resize:none;
+                   border-radius:0; background:transparent; color:var(--ink);
+                   padding:var(--sp-6) var(--sp-5); overflow:auto;
+                   font-size:var(--fs-mono); line-height:1.85; }
+.livehead { font-size:var(--fs-100); color:var(--faint); margin-bottom:var(--sp-4);
+            letter-spacing:.06em; }
+
+.conf .card > h3 { margin:var(--sp-4) 0 var(--sp-1); font-size:var(--fs-100);
+                   font-weight:var(--fw-bold); letter-spacing:.06em; color:var(--faint); }
+.conf .lede { font-size:var(--fs-100); color:var(--faint); margin:0 0 var(--sp-5); }
+.conf .open { font-size:var(--fs-100); color:var(--accent); text-decoration:none;
+              border:1px solid var(--accent-line); border-radius:var(--r-sm);
+              padding:1px var(--sp-2); background:var(--accent-soft); white-space:nowrap; }
 
 .empty { color:var(--faint); font-size:var(--fs-200); padding:var(--sp-4) var(--sp-3); }
+.readonly { font-size:var(--fs-100); color:var(--faint); }
 
-  /* 내 양식은 문서가 아니라 설정 옆에 두는 것이라 아래 칸에 있다 */
-  .sectitle.custom { margin-top:var(--sp-2); padding-top:var(--sp-3);
-                     border-top:1px solid var(--line); }
+/* 내 양식은 문서가 아니라 설정 옆에 두는 것이라 아래 칸에 있다 */
+.sectitle.custom { margin-top:var(--sp-1); padding-top:var(--sp-3);
+                   border-top:1px solid var(--hair); }
+.doclink.none { color:var(--faint); }
 
-  /* 아직 만들지 않은 내 양식 */
-  .doclink.none { color:var(--faint); }
-  .doclink.none:hover { background:transparent; cursor:default; }
+.scrim { position:absolute; inset:0; z-index:15; background:rgba(20,18,15,.3); }
 
-@media (max-width:820px) {
-  nav.side { position:absolute; z-index:20; height:calc(100% - var(--topbar));
-             box-shadow:var(--shadow-2); }
-  .wrap { padding:var(--sp-6) var(--sp-4) 80px; }
-  .doctop { padding:var(--sp-2) var(--sp-4); }
+@media (max-width:1100px) {
+  .editor { grid-template-columns:1fr; }
+  .editor .pane.live { display:none; }
+  .editor.showlive .pane.src { display:none; }
+  .editor.showlive .pane.live { display:block; }
+}
+@media (max-width:860px) {
+  nav.side { position:absolute; z-index:20; height:100%; box-shadow:var(--shadow-2); }
+  .wrap { padding:var(--sp-4) var(--sp-3) 80px; }
+  .paper { padding:var(--sp-6) var(--sp-5); }
+  .doctop, .rel { padding-left:var(--sp-4); padding-right:var(--sp-4); }
+  #jobs { right:var(--sp-3); bottom:var(--sp-3); width:auto; left:var(--sp-3); }
 }
 </style></head>
 <body>
 <div class="app">
 
   <header class="appbar">
-    <button class="iconbtn" id="toggleSide" title="목록 접기">&#9776;</button>
-    <button class="home" id="home" title="첫 화면으로">
+    <button class="iconbtn" id="toggleSide" title="목록 접기 (Ctrl+\)">
+      <svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 5.5h14M3 10h14M3 14.5h14"/></svg>
+    </button>
+    <button class="home" id="home" title="가장 최근 보고서로">
       <img class="logo" src="/favicon.ico" alt="">
       <span class="brand">work-report</span>
     </button>
     <span class="grow"></span>
+    <button class="iconbtn" id="theme" title="화면 밝기"></button>
+    <span class="sep"></span>
     <span class="make">
-      <button class="tint" id="runDaily">일일보고 만들기</button>
-      <button class="tint" id="runWeekly">주간보고 만들기</button>
+      <button id="runDaily">일일보고 만들기</button>
+      <button id="runWeekly">주간보고 만들기</button>
     </span>
   </header>
 
   <div class="main">
     <nav class="side" id="side">
+      <div class="searchbox">
+        <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="9" r="5.5"/><path d="M13.2 13.2 17 17" stroke-linecap="round"/></svg>
+        <input id="q" type="text" placeholder="날짜로 찾기  (/)" spellcheck="false" autocomplete="off">
+        <button id="clearq" title="지우기" hidden>
+          <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 5l10 10M15 5L5 15"/></svg>
+        </button>
+      </div>
       <div class="navscroll" id="files"></div>
       <div class="navfoot">
-        {{README_TAB}}
-        <button class="navitem" id="tabConfig"><span class="ic">&#9881;</span>설정</button>
+        <button class="navitem" id="tabReadme">
+          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="7.2"/><path d="M10 9v5" stroke-linecap="round"/><circle cx="10" cy="6.4" r=".9" fill="currentColor" stroke="none"/></svg>
+          사용 설명
+        </button>
+        <button class="navitem" id="tabConfig">
+          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.6v2.2M10 15.2v2.2M17.4 10h-2.2M4.8 10H2.6M15.2 4.8l-1.6 1.6M6.4 13.6l-1.6 1.6M15.2 15.2l-1.6-1.6M6.4 6.4 4.8 4.8" stroke-linecap="round"/></svg>
+          설정
+        </button>
         <div id="customBox"></div>
       </div>
     </nav>
 
     <section class="doc">
       <div class="doctop">
+        <span class="flip" id="flip">
+          <button class="iconbtn" id="prev" title="이전 날짜 ([)">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5 6.5 10l5.5 5.5"/></svg>
+          </button>
+          <button class="iconbtn" id="next" title="다음 날짜 (])">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4.5 13.5 10 8 15.5"/></svg>
+          </button>
+        </span>
         <div class="titlebox">
           <h1 class="doctitle" id="docTitle">work-report</h1>
-          <div class="docsub" id="docPath"></div>
+          <div class="docsub" id="docSub"></div>
         </div>
         <div class="docacts">
           <span class="state" id="state"></span>
@@ -779,18 +940,26 @@ textarea.src { display:block; width:100%; min-height:320px;
             <button id="tabRaw">원문</button>
           </span>
           <button id="edit">고치기</button>
-          <button id="save" class="primary" hidden>저장</button>
-          <button id="confSave" class="primary" hidden>설정 저장</button>
-          <button id="copy" class="quiet">복사</button>
-          {{SUBMIT_BUTTON}}
+          <button id="cancel" hidden>되돌리기</button>
+          <button id="save" class="solid" hidden>저장</button>
+          <button id="confSave" class="solid" hidden>설정 저장</button>
+          <button id="copy" class="quiet" hidden>복사</button>
+          <button id="submit" class="solid" hidden>{{SUBMIT_LABEL}}</button>
         </div>
       </div>
+      <div class="rel" id="rel" hidden></div>
       <div class="sheet" id="sheet">
         <div class="wrap">
           <div class="paper" id="paper">
             <div class="body" id="view"></div>
             <pre class="raw" id="rawView" hidden></pre>
-            <textarea class="src" id="src" hidden spellcheck="false"></textarea>
+          </div>
+          <div class="editor" id="editor" hidden>
+            <div class="pane src"><textarea id="src" class="mono" spellcheck="false"></textarea></div>
+            <div class="pane live">
+              <div class="livehead">미리보기</div>
+              <div class="body" id="liveView"></div>
+            </div>
           </div>
           <div class="body conf" id="confView" hidden></div>
         </div>
@@ -803,229 +972,330 @@ textarea.src { display:block; width:100%; min-height:320px;
 
 <script>
 const SUBMIT_URL = "{{SUBMIT_URL}}";
+const HAS_README = {{HAS_README}};
 // 알림을 눌러 들어오면 어떤 보고서를 열지 주소가 말해 준다
 const START = new URLSearchParams(location.search).get('path') || '';
-const AREA_NAME = { daily:'일일보고', weekly:'주간보고', log:'한 일 목록', raw:'수집 원본' };
+const AREA_NAME = { daily:'일일 보고', weekly:'주간 보고', log:'한 일 목록', raw:'수집 원본' };
+const AREA_TAG  = { daily:'일일', weekly:'주간', log:'한 일', raw:'원본' };
 const CUSTOM_NAME = { 'report-format.md':'보고서 양식', 'writing-rules.md':'글쓰기 문체',
                       'my-reports.md':'내 보고서' };
 // 제출문 절은 붙여넣기용이라 보고서 전체가 아니라 그 절만 클립보드에 담는다
 const SUBMIT_HEAD = '제출문';
 // 보고서를 쓸 때 근거로 들춰 보는 것들이다. 매번 펼쳐져 있으면 목록만 길어진다
 const FOLDED = ['log', 'raw'];
-let raw = '', current = '', dirty = false, mode = 'preview', readme = null, conf = null;
+const WD = ['일','월','화','수','목','금','토'];
 
-// 화면에서 고치는 항목만 둔다. 설치가 채우는 경로 값은 여기에 없다.
-const WEEKDAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
-const FIELDS = [
-  { k:'author',        t:'text',   label:'작성자', size:'short' },
-  { k:'agent',         t:'select', label:'실행 CLI', opts:['claude','codex'] },
-  { k:'notify',        t:'bool', def:true,   label:'알림 사용' },
-  { k:'submit_url',    t:'text',   label:'제출 화면 주소', size:'long',
-    hint:'비우면 제출 단추가 사라집니다' },
-  { k:'submit_label',  t:'text',   label:'제출 단추 문구', size:'mid' },
-  { k:'custom_format', t:'bool', def:false, label:'내 보고서 양식 쓰기',
-    hint:'켜면 보고 폴더의 custom\\report-format.md를 쓴다. 없으면 기본값을 복사해 만들어 준다' },
-  { k:'custom_rules',  t:'bool', def:false, label:'내 글쓰기 문체 쓰기',
-    hint:'켜면 기본 원칙 뒤에 custom\\writing-rules.md를 덧붙인다' },
-  { k:'custom_samples', t:'bool', def:false, label:'내 보고서 따라하기',
-    hint:'켜면 custom\\my-reports.md에 붙여넣은 지난 보고서를 문체 예시로 쓴다.' +
-         '\n보고서 맨 앞에 그 문체로 쓴 제출문 절이 생긴다.' +
-         '\n붙여넣은 것이 없으면 아무 일도 하지 않는다' },
-  { h:'수집' },
-  { k:'mine_only',     t:'bool', def:true,   label:'내 이메일의 커밋만' },
-  { k:'redact',        t:'bool', def:true,   label:'키·토큰 가리기' },
-  { k:'exclude_repos', t:'lines',  label:'제외할 저장소',
-    hint:'한 줄에 하나. 경로에 그 글자가 들어가면 제외된다.' +
-         '\nex. my-project' +
-         '\n폴더 이름만 적는 편이 확실하다. 저장소를 옮겨도 계속 걸린다.' +
-         '\nex. /c/Users/me/project/my-project → 안 걸린다 (Git Bash 형식)' },
-  { k:'exclude_paths', t:'lines',  label:'작업으로 안 치는 경로',
-    hint:'한 줄에 하나. 경로에 그 글자가 들어가면 뺀다.' +
-         '\nex. node_modules' +
-         '\nex. \\build\\  (구분자는 \\ 로 적는다)' },
-  { h:'실행' },
-  { k:'backfill_days', t:'num',    label:'빠뜨린 날 채우기', hint:'며칠 전까지. 0이면 안 함' },
-  { k:'retain_months', t:'num',    label:'수집본 보관(개월)',
-    hint:'0이면 전부 보관. 보고서는 지우지 않음' },
-  { k:'weekly.end_day',   t:'select', label:'주간 마지막 요일', opts:WEEKDAYS },
-  { k:'weekly.span_days', t:'num',    label:'주간 기간(일)' },
-  { h:'실행 파일' },
-  { k:'claude_bin', t:'text', label:'claude 경로', size:'long',
-    probe:'claude', hint:'찾는 중...' },
-  { k:'codex_bin',  t:'text', label:'codex 경로',  size:'long',
-    probe:'codex',  hint:'찾는 중...' },
-  { k:'python_bin', t:'text', label:'python 경로', size:'long',
-    probe:'python', hint:'찾는 중...' },
-];
-const dig = (o, k) => k.split('.').reduce((a, x) => (a || {})[x], o);
+let raw = '', orig = '', current = '', dirty = false;
+let view = 'doc';            // doc | config | readme
+let mode = 'preview';        // 문서를 읽는 방식: preview | raw
+let editing = false, cellEditing = null;
+let readme = null, conf = null, confDirty = false;
+let INDEX = { byArea:{}, byName:{} };
+
 const $ = id => document.getElementById(id);
+const pad = n => (n < 10 ? '0' : '') + n;
+const dig = (o, k) => k.split('.').reduce((a, x) => (a || {})[x], o);
+const narrow = () => window.matchMedia('(max-width:1100px)').matches;
+const areaOf = p => (p || '').split('/')[0];
 
+function el(tag, cls, text){
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
 function api(path, params){
   const q = new URLSearchParams(params || {}).toString();
   return q ? path + '?' + q : path;
 }
 function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+/* ============================================================ 마크다운
+   보고서와 수집 원본, 사용 설명이 쓰는 문법만 다룬다. 들여쓴 목록을 단으로
+   살려야 수집 원본이 읽힌다 - 지시 수십 개가 세션 정보와 같은 단으로 늘어서면
+   무엇에 딸린 것인지 알 수 없다. */
 function inline(s){
-  return esc(s).replace(/`([^`]+)`/g, '<code>$1</code>')
-               .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-               .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  return esc(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
+    .replace(/~~([^~]+)~~/g, '<del>$1</del>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
 }
-// 보고서와 README가 쓰는 문법만 다룬다
-function render(md){
+function splitRow(line){
+  return line.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|');
+}
+// cells: 표 칸에 원문 줄 번호를 달아 둘지. 그 자리에서 고치는 화면만 쓴다
+function render(md, cells){
   const out = [], lines = md.split(/\r?\n/);
-  let i = 0, list = false, fence = null, para = [];
-  const closeList = () => { if (list) { out.push('</ul>'); list = false; } };
-  // 이어진 줄은 한 문단이다. 줄마다 문단을 열면 원문의 줄바꿈 위치가
-  // 그대로 화면의 끊김이 되어, 폭이 넓은 화면에서 글이 토막나 보인다.
-  const closePara = () => {
-    if (para.length) { out.push('<p>' + inline(para.join(' ')) + '</p>'); para = []; }
+  const stack = [], liOpen = [];
+  let i = 0, fence = null, para = [], quote = [], lastLi = false;
+
+  const closeLi = () => {
+    const n = liOpen.length - 1;
+    if (n >= 0 && liOpen[n]) { out.push('</li>'); liOpen[n] = false; }
   };
-  const closeBoth = () => { closeList(); closePara(); };
+  const closeList = () => { closeLi(); const s = stack.pop(); liOpen.pop(); out.push('</' + s.tag + '>'); };
+  const closePara = () => { if (para.length) { out.push('<p>' + inline(para.join(' ')) + '</p>'); para = []; } };
+  const closeQuote = () => { if (quote.length) { out.push('<blockquote>' + inline(quote.join(' ')) + '</blockquote>'); quote = []; } };
+  const closeAll = () => { while (stack.length) closeList(); closePara(); closeQuote(); lastLi = false; };
+
   while (i < lines.length) {
     const ln = lines[i];
     if (fence !== null) {
-      if (/^\s*```/.test(ln)) { out.push(esc(fence.join('\n'))); out.push('</pre>'); fence = null; }
+      if (/^\s*```/.test(ln)) { out.push(esc(fence.join('\n'))); out.push('</code></pre>'); fence = null; }
       else fence.push(ln);
       i++; continue;
     }
-    if (/^\s*```/.test(ln)) { closeBoth(); out.push('<pre class="code">'); fence = []; i++; continue; }
+    if (/^\s*```/.test(ln)) { closeAll(); out.push('<pre class="code"><code>'); fence = []; i++; continue; }
+
     const isTable = /^\s*\|/.test(ln) && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i+1] || '');
     if (isTable) {
-      closeBoth();
-      const cells = r => r.replace(/^\s*\|/,'').replace(/\|\s*$/,'').split('|').map(c => c.trim());
-      out.push('<div class="tablewrap"><table><thead><tr>'
-               + cells(ln).map(c => '<th>'+inline(c)+'</th>').join('') + '</tr></thead><tbody>');
+      closeAll();
+      const cut = r => splitRow(r).map(c => c.trim());
+      const head = cut(ln);
+      out.push('<div class="tablewrap"><table' + (cells ? ' class="cells"' : '')
+               + ' data-cols="' + head.length + '"><thead><tr>'
+               + head.map(c => '<th>' + inline(c) + '</th>').join('') + '</tr></thead><tbody>');
       i += 2;
       while (i < lines.length && /^\s*\|/.test(lines[i])) {
-        out.push('<tr>' + cells(lines[i]).map(c => '<td>'+inline(c)+'</td>').join('') + '</tr>');
+        out.push('<tr>' + cut(lines[i]).map((c, j) =>
+          '<td data-ln="' + i + '" data-c="' + j + '">' + inline(c) + '</td>').join('') + '</tr>');
         i++;
       }
       out.push('</tbody></table></div>');
       continue;
     }
+
     let m;
-    if ((m = ln.match(/^(#{1,4})\s+(.*)$/))) { closeBoth(); out.push('<h'+m[1].length+'>'+inline(m[2])+'</h'+m[1].length+'>'); }
-    else if (/^\s*---+\s*$/.test(ln)) { closeBoth(); out.push('<hr>'); }
-    else if ((m = ln.match(/^\s*[-*]\s+(.*)$/))) { closePara(); if (!list) { out.push('<ul>'); list = true; } out.push('<li>'+inline(m[1])+'</li>'); }
-    else if ((m = ln.match(/^\s*\d+\.\s+(.*)$/))) { closePara(); if (!list) { out.push('<ul>'); list = true; } out.push('<li>'+inline(m[1])+'</li>'); }
-    else if (ln.trim() === '') { closeBoth(); }
-    else if (list) { out.push('</ul>'); list = false; para.push(ln); }   // 목록이 끝나고 문단이 시작
-    else { para.push(ln); }
+    if ((m = ln.match(/^(#{1,4})\s+(.*)$/))) {
+      closeAll();
+      out.push('<h' + m[1].length + '>' + inline(m[2]) + '</h' + m[1].length + '>');
+    }
+    else if (/^\s*(---+|\*\*\*+|___+)\s*$/.test(ln)) { closeAll(); out.push('<hr>'); }
+    else if ((m = ln.match(/^\s*>\s?(.*)$/))) { while (stack.length) closeList(); closePara(); quote.push(m[1]); lastLi = false; }
+    else if ((m = ln.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/))) {
+      closePara(); closeQuote();
+      const indent = m[1].replace(/\t/g, '    ').length;
+      const tag = /\d/.test(m[2]) ? 'ol' : 'ul';
+      while (stack.length && indent < stack[stack.length - 1].indent) closeList();
+      if (!stack.length || indent > stack[stack.length - 1].indent) {
+        // 바로 위 항목 안으로 들어간다. 부모의 <li>는 열어 둔 채로 중첩한다
+        out.push('<' + tag + '>'); stack.push({ tag: tag, indent: indent }); liOpen.push(false);
+      } else {
+        closeLi();
+        if (stack[stack.length - 1].tag !== tag) {
+          closeList();
+          out.push('<' + tag + '>'); stack.push({ tag: tag, indent: indent }); liOpen.push(false);
+        }
+      }
+      out.push('<li>' + inline(m[3]));
+      liOpen[liOpen.length - 1] = true;
+      lastLi = true;
+    }
+    else if (ln.trim() === '') { closeAll(); }
+    else if (lastLi && /^\s{2,}\S/.test(ln)) {
+      // 한 항목이 여러 줄에 걸친 경우. 새 항목으로 떼면 목록이 두 배로 길어진다
+      out[out.length - 1] += ' ' + inline(ln.trim());
+    }
+    else { while (stack.length) closeList(); lastLi = false; para.push(ln); }
     i++;
   }
-  closeBoth();
+  closeAll();
   return out.join('\n');
 }
 
-// 입력칸이 내용만큼 자란다. 안에서 또 스크롤되면 스크롤 막대가 둘이 된다
-function fitSrc(){
-  const ta = $('src');
-  ta.style.height = 'auto';
-  ta.style.height = ta.scrollHeight + 'px';
+/* ============================================================ 이름 붙이기
+   파일 이름은 2026-10-01 이지만 사람이 찾는 단서는 요일이다 */
+function parseName(name){
+  let m = name.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return { kind:'day', y:+m[1], m:+m[2], d:+m[3] };
+  m = name.match(/^(\d{4})-(\d{2})-(\d{2})_(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return { kind:'span', y:+m[1], m:+m[2], d:+m[3], m2:+m[5], d2:+m[6] };
+  return null;
 }
-
-function setState(t, warn){
-  const el = $('state');
-  el.textContent = t || '';
-  el.classList.toggle('warn', !!warn);
+function dayOf(p){ return WD[new Date(p.y, p.m - 1, p.d).getDay()]; }
+// 레일의 달 묶음 안이라 연도를 뺀다
+function shortLabel(name){
+  const p = parseName(name);
+  if (!p) return name;
+  if (p.kind === 'day') return pad(p.m) + '-' + pad(p.d) + ' (' + dayOf(p) + ')';
+  return pad(p.m) + '-' + pad(p.d) + ' ~ ' + pad(p.m2) + '-' + pad(p.d2);
 }
-function flash(t){ setState(t); setTimeout(() => setState(''), 2500); }
-function editing(){ return !$('src').hidden; }
-function text(){ return editing() ? $('src').value : raw; }
-
-// 경로에서 사람이 읽을 제목을 만든다: daily/2026-09/2026-09-22.md -> 2026-09-22 일일보고
+function longLabel(name){
+  const p = parseName(name);
+  if (!p) return name;
+  if (p.kind === 'day') return name + ' (' + dayOf(p) + ')';
+  return p.y + '-' + pad(p.m) + '-' + pad(p.d) + ' ~ ' + pad(p.m2) + '-' + pad(p.d2);
+}
 function titleOf(path, fallback){
   if (!path) return fallback || 'work-report';
   const parts = path.split('/');
   const last = parts[parts.length - 1];
-  if (parts[0] === 'custom') return (CUSTOM_NAME[last] || last) + ' (내 양식)';
-  const name = last.replace(/\.md$/, '');
+  if (parts[0] === 'custom') return (CUSTOM_NAME[last] || last) + ' · 내 양식';
+  const name = last.replace(/\.(md|log)$/i, '');
   const area = AREA_NAME[parts[0]];
-  return area ? name + ' ' + area : name;
+  return area ? longLabel(name) + ' · ' + area : name;
 }
 
+/* ============================================================ 문서 사이의 길
+   요약에서 빠진 근거는 같은 날짜의 다른 문서에 있다. 왼쪽 트리를 다시
+   헤치지 않고 건너갈 수 있어야 한다. */
+function buildIndex(groups){
+  const byArea = {}, byName = {};
+  for (const g of groups) {
+    const list = [];
+    for (const mo of g.months) for (const it of mo.items) list.push(it);
+    list.sort((a, b) => a.name < b.name ? 1 : (a.name > b.name ? -1 : 0));
+    byArea[g.area] = list;
+    for (const it of list) (byName[it.name] = byName[it.name] || {})[g.area] = it.path;
+  }
+  INDEX = { byArea: byArea, byName: byName };
+}
+function nameOf(path){ return (path.split('/').pop() || '').replace(/\.md$/i, ''); }
+function siblingsOf(path){
+  const area = areaOf(path), nm = nameOf(path);
+  // 주간 보고에는 같은 이름의 수집 원본이 없다. 주간은 원본 대화가 아니라 그
+  // 구간의 한 일 목록을 읽어서 쓰기 때문이다. 근거도 거기에 있다.
+  const span = nm.split('_');
+  if (area === 'weekly' && span.length === 2 && parseName(span[0]) && parseName(span[1])) {
+    const days = (INDEX.byArea.log || [])
+      .filter(it => it.name >= span[0] && it.name <= span[1])
+      .sort((a, b) => a.name < b.name ? -1 : 1)
+      .map(it => ({ area:'log', path:it.path, label: shortLabel(it.name) }));
+    return { lead:'이 구간의 한 일 목록', items: days };
+  }
+  const row = INDEX.byName[nm] || {}, out = [];
+  for (const a of ['daily', 'weekly', 'log', 'raw'])
+    if (a !== area && row[a]) out.push({ area:a, path:row[a], label: AREA_NAME[a] });
+  return { lead:'같은 날짜', items: out };
+}
+function neighborsOf(path){
+  const list = INDEX.byArea[areaOf(path)] || [];
+  let i = -1;
+  for (let n = 0; n < list.length; n++) if (list[n].path === path) { i = n; break; }
+  if (i < 0) return { prev:null, next:null };
+  return { prev: list[i + 1] || null, next: list[i - 1] || null };   // 목록은 최신이 위다
+}
+
+/* ============================================================ 화면 상태
+   어떤 단추가 보이는지는 여기 한 곳에서만 정한다. 화면마다 따로 숨기면
+   읽을 수 없는 문서에 제출 단추가 남는 식으로 어긋난다. */
+function setState(t, kind){
+  const e = $('state');
+  e.textContent = t || '';
+  e.className = 'state' + (kind ? ' ' + kind : '');
+}
+function flash(t, kind){ setState(t, kind || 'good'); setTimeout(() => { if ($('state').textContent === t) setState(''); }, 2600); }
 function setHead(title, sub){
   $('docTitle').textContent = title;
-  $('docPath').textContent = sub || '';
+  $('docSub').textContent = sub || '';
   document.title = title;
 }
+function canCells(){
+  return view === 'doc' && !editing && !!current
+         && /\.md$/i.test(current) && areaOf(current) !== 'raw';
+}
+function renderPreview(){ $('view').innerHTML = render(raw, canCells()); }
+function renderLive(){ $('liveView').innerHTML = render($('src').value, false); }
 
-// 보고서를 볼 때와 설정·README를 볼 때는 쓸 수 있는 동작이 다르다
-function show(which){
-  mode = which;
-  const doc = which === 'preview' || which === 'raw';
-  const ed = editing();
-  // 실행 기록은 읽기만 한다. 저장은 보고서에만 연다
-  const writable = !current || /\.md$/i.test(current);
-  $('view').hidden = ed || which === 'raw' || which === 'config';
-  $('rawView').hidden = ed || which !== 'raw';
-  $('confView').hidden = which !== 'config';
-  $('src').hidden = !ed || !doc;
-  // 설정은 종이 위의 글이 아니라 다른 화면이다
-  $('paper').hidden = which === 'config';
-  $('paper').classList.toggle('edit', ed && doc);
-  if (ed && doc) fitSrc();
-
-  // 고칠 때는 고르는 일이 없다. 표현 방식도, 복사도, 제출도 읽을 때의 동작이다
-  $('seg').hidden = !doc || ed;
-  $('edit').hidden = !doc || !writable;
-  $('edit').textContent = ed ? '보기' : '고치기';
-  $('save').hidden = !doc || !ed || !writable;
-  $('copy').hidden = !doc || ed;
-  $('confSave').hidden = which !== 'config';
-  if ($('submit')) $('submit').hidden = !doc || ed;
-
-  $('tabPreview').classList.toggle('on', which === 'preview');
-  $('tabRaw').classList.toggle('on', which === 'raw');
-  $('tabConfig').classList.toggle('on', which === 'config');
-  if ($('tabReadme')) $('tabReadme').classList.toggle('on', which === 'readme');
+function markCurrent(){
   document.querySelectorAll('.doclink').forEach(a =>
-    a.classList.toggle('on', doc && a.dataset.path === current));
-
-  if (which === 'readme') { setHead('사용 설명', 'GUIDE.md'); $('view').innerHTML = render(readme || ''); }
-  else if (which === 'config') { setHead('설정', 'config.json'); }
-  else {
-    setHead(titleOf(current), current);
-    if (which === 'preview') $('view').innerHTML = render(raw);
+    a.classList.toggle('on', view === 'doc' && a.dataset.path === current));
+}
+function drawRel(){
+  const bar = $('rel');
+  bar.textContent = '';
+  const rel = (view === 'doc' && current && !editing) ? siblingsOf(current) : { lead:'', items:[] };
+  if (!rel.items.length) { bar.hidden = true; return; }
+  bar.appendChild(el('span', '', rel.lead));
+  for (const s of rel.items) {
+    const a = el('a', s.area === 'log' ? 'num' : '', s.label);
+    a.href = '#';
+    a.onclick = e => { e.preventDefault(); openReport(s.path); };
+    bar.appendChild(a);
   }
-  $('sheet').scrollTop = 0;
+  bar.hidden = false;
+}
+function layout(){
+  const isDoc = view === 'doc', isReadme = view === 'readme';
+  const area = areaOf(current);
+  const writable = isDoc && !!current && /\.md$/i.test(current) && area !== 'raw';
+  const showPaper = (isDoc || isReadme) && !editing;
+  const live = $('editor').classList.contains('showlive');
+
+  $('paper').hidden = !showPaper;
+  $('view').hidden = !showPaper || (isDoc && mode === 'raw');
+  $('rawView').hidden = !(showPaper && isDoc && mode === 'raw');
+  $('editor').hidden = !(isDoc && editing);
+  $('confView').hidden = view !== 'config';
+  $('sheet').classList.toggle('editing', isDoc && editing);
+
+  // 고치는 중에도 결과를 볼 수 있어야 한다. 넓은 화면은 좌우로 나누고,
+  // 좁은 화면에서는 이 고르개가 두 쪽을 번갈아 보여 준다
+  $('seg').hidden = !(isDoc && (!editing || narrow()));
+  $('tabPreview').classList.toggle('on', editing ? live : mode === 'preview');
+  $('tabRaw').classList.toggle('on', editing ? !live : mode === 'raw');
+
+  $('edit').hidden = !(writable && !editing);
+  $('cancel').hidden = !(isDoc && (editing || dirty));
+  $('cancel').textContent = dirty ? '되돌리기' : '보기';
+  $('save').hidden = !(isDoc && (editing || dirty));
+  $('confSave').hidden = view !== 'config';
+  // 제출은 보고서가 하는 일이다. 한 일 목록과 수집 원본은 근거라서 내지 않는다
+  $('submit').hidden = !(SUBMIT_URL && isDoc && !editing && (area === 'daily' || area === 'weekly'));
+  $('copy').hidden = !(isDoc && !editing && !!current);
+  if (isDoc && current) $('copy').textContent = toCopy().part ? '제출문 복사' : '복사';
+
+  const nb = (isDoc && current) ? neighborsOf(current) : { prev:null, next:null };
+  $('flip').hidden = !(isDoc && !editing && (nb.prev || nb.next));
+  $('prev').disabled = !nb.prev;
+  $('next').disabled = !nb.next;
+  $('prev').title = nb.prev ? '이전 - ' + longLabel(nb.prev.name) + '  ([)' : '이전  ([)';
+  $('next').title = nb.next ? '다음 - ' + longLabel(nb.next.name) + '  (])' : '다음  (])';
+
+  $('tabConfig').classList.toggle('on', view === 'config');
+  $('tabReadme').classList.toggle('on', view === 'readme');
+  markCurrent();
+  drawRel();
+}
+function paint(){
+  if (view === 'readme') { setHead('사용 설명', 'GUIDE.md'); $('view').innerHTML = render(readme || '', false); }
+  else if (view === 'config') { setHead('설정', 'config.json'); }
+  else {
+    setHead(titleOf(current), current + (areaOf(current) === 'raw' ? '   읽기 전용' : ''));
+    if (mode === 'preview') renderPreview(); else $('rawView').textContent = raw;
+  }
+  layout();
 }
 
-function docLink(it, area, withChip){
-  const a = document.createElement('a');
-  a.className = 'doclink';
+/* ============================================================ 왼쪽 목록 */
+function docLink(it, area, withTag){
+  const a = el('a', 'doclink');
   a.href = '#';
   a.dataset.path = it.path;
-  const t = document.createElement('span');
-  t.textContent = it.name;
+  a.dataset.find = (it.name + ' ' + (AREA_NAME[area] || '')).toLowerCase();
+  const t = el('span', 'num', withTag ? longLabel(it.name) : shortLabel(it.name));
   t.style.overflow = 'hidden';
   t.style.textOverflow = 'ellipsis';
   a.appendChild(t);
-  if (withChip) {
-    const c = document.createElement('span');
-    c.className = 'chip';
-    c.textContent = AREA_NAME[area] || area;
-    a.appendChild(c);
-  }
-  if (it.path === current) a.classList.add('on');
+  if (withTag) a.appendChild(el('span', 'chip', AREA_TAG[area] || area));
   a.onclick = e => { e.preventDefault(); openReport(it.path); };
   return a;
 }
 
 async function loadFiles(){
   const d = await (await fetch(api('files'))).json();
+  buildIndex(d.groups || []);
   drawCustom($('customBox'), d.custom || []);
   const box = $('files');
   const opened = new Set([...box.querySelectorAll('.month:not(.closed)')].map(e => e.dataset.key));
   const shut = new Set([...box.querySelectorAll('.group.closed')].map(e => e.dataset.area));
   const first = !box.querySelector('.group');   // 처음 그리는가, 다시 그리는가
-  box.innerHTML = '';
+  box.textContent = '';
 
   if (!d.groups.length) {
-    const e = document.createElement('div');
-    e.className = 'empty';
-    e.textContent = '아직 보고서가 없습니다.';
-    box.appendChild(e);
+    box.appendChild(el('div', 'empty', '아직 보고서가 없습니다.'));
     return;
   }
 
@@ -1033,64 +1303,49 @@ async function loadFiles(){
   const recent = [];
   for (const g of d.groups) {
     if (g.area !== 'daily' && g.area !== 'weekly') continue;
-    for (const mo of g.months) for (const it of mo.items) recent.push({ it, area: g.area });
+    for (const mo of g.months) for (const it of mo.items) recent.push({ it: it, area: g.area });
   }
   recent.sort((a, b) => a.it.name < b.it.name ? 1 : -1);
   if (recent.length) {
-    const head = document.createElement('div');
-    head.className = 'sectitle';
-    head.textContent = '최근';
-    box.appendChild(head);
-    const wrap = document.createElement('div');
-    wrap.className = 'recent';
+    const wrap = el('div', 'recent');
+    wrap.id = 'recentBox';
+    wrap.appendChild(el('div', 'sectitle', '최근'));
     recent.slice(0, 5).forEach(r => wrap.appendChild(docLink(r.it, r.area, true)));
     box.appendChild(wrap);
   }
 
-  const all = document.createElement('div');
-  all.className = 'sectitle';
-  all.textContent = '전체';
-  all.style.marginTop = '6px';
+  const all = el('div', 'sectitle', '전체');
+  all.id = 'allHead';
   box.appendChild(all);
 
   for (const g of d.groups) {
-    const area = document.createElement('div');
-    area.className = 'group';
+    const area = el('div', 'group');
     area.dataset.area = g.area;
     if (first ? FOLDED.includes(g.area) : shut.has(g.area)) area.classList.add('closed');
     const total = g.months.reduce((n, mo) => n + mo.items.length, 0);
 
-    const ahead = document.createElement('button');
-    ahead.className = 'head';
-    ahead.innerHTML = '<span class="caret">&#9660;</span>';
-    ahead.appendChild(document.createTextNode(g.label));
-    const cnt = document.createElement('span');
-    cnt.className = 'count';
-    cnt.textContent = total;
-    ahead.appendChild(cnt);
-    ahead.onclick = () => area.classList.toggle('closed');
-    area.appendChild(ahead);
+    const head = el('button', 'head');
+    head.appendChild(caret());
+    head.appendChild(document.createTextNode(g.label));
+    head.appendChild(el('span', 'count', String(total)));
+    head.onclick = () => area.classList.toggle('closed');
+    area.appendChild(head);
 
-    const abox = document.createElement('div');
-    abox.className = 'items';
+    const abox = el('div', 'items');
     g.months.forEach((mo, mi) => {
       const key = g.area + '/' + mo.month;
-      const month = document.createElement('div');
-      month.className = 'month';
+      const month = el('div', 'month');
       month.dataset.key = key;
       // 처음에는 가장 최근 달만 펼친다. 쌓여도 목록이 길어지지 않는다.
       // 다시 그릴 때는 지금 펼쳐 둔 것을 그대로 둔다 - 전부 접어 두었다고 해서
       // 보고서를 만들 때마다 최근 달이 도로 열리면 접어 둔 뜻이 없다.
-      const keepOpen = first ? mi === 0 : opened.has(key);
-      if (!keepOpen) month.classList.add('closed');
-      const mhead = document.createElement('button');
-      mhead.className = 'mhead';
-      mhead.innerHTML = '<span class="caret">&#9660;</span>';
+      if (!(first ? mi === 0 : opened.has(key))) month.classList.add('closed');
+      const mhead = el('button', 'mhead');
+      mhead.appendChild(caret());
       mhead.appendChild(document.createTextNode(mo.month));
       mhead.onclick = () => month.classList.toggle('closed');
       month.appendChild(mhead);
-      const list = document.createElement('div');
-      list.className = 'items';
+      const list = el('div', 'items');
       for (const it of mo.items) list.appendChild(docLink(it, g.area, false));
       month.appendChild(list);
       abox.appendChild(month);
@@ -1098,101 +1353,287 @@ async function loadFiles(){
     area.appendChild(abox);
     box.appendChild(area);
   }
+  applyFilter();
+  markCurrent();
+}
+function caret(){
+  const c = el('span', 'caret');
+  c.innerHTML = '<svg width="9" height="9" viewBox="0 0 10 10" fill="currentColor"><path d="M1 3h8L5 8z"/></svg>';
+  return c;
+}
+
+// 문서가 여든 개를 넘으면 트리를 훑는 것보다 날짜 몇 자를 치는 쪽이 빠르다
+let preFilter = null;
+function applyFilter(){
+  const q = $('q').value.trim().toLowerCase();
+  $('clearq').hidden = !q;
+  if (q && !preFilter) {
+    preFilter = new Set();
+    document.querySelectorAll('#files .group.closed').forEach(e => preFilter.add(e.dataset.area));
+    document.querySelectorAll('#files .month.closed').forEach(e => preFilter.add(e.dataset.key));
+  }
+  const rec = $('recentBox'), allHead = $('allHead');
+  if (rec) rec.hidden = !!q;
+  if (allHead) allHead.hidden = !!q;
+  document.querySelectorAll('#files .doclink').forEach(a => {
+    a.hidden = !!q && (a.dataset.find || '').indexOf(q) < 0;
+  });
+  document.querySelectorAll('#files .month').forEach(m => {
+    const any = [...m.querySelectorAll('.doclink')].some(a => !a.hidden);
+    m.hidden = !any;
+    if (q) m.classList.remove('closed');
+  });
+  document.querySelectorAll('#files .group').forEach(g => {
+    const any = [...g.querySelectorAll('.doclink')].some(a => !a.hidden);
+    g.hidden = !any;
+    if (q) g.classList.remove('closed');
+  });
+  if (!q && preFilter) {
+    document.querySelectorAll('#files .group').forEach(g => g.classList.toggle('closed', preFilter.has(g.dataset.area)));
+    document.querySelectorAll('#files .month').forEach(m => m.classList.toggle('closed', preFilter.has(m.dataset.key)));
+    preFilter = null;
+  }
 }
 
 // 내 양식. 보고서와 같은 .md라 뷰어가 그대로 열고 저장한다.
-// 없을 때는 기본값을 복사해 주는 단추만 둔다 - 백지에서 쓰게 하지 않는다.
+// 쓸지 말지는 설정이 정하므로 여기서는 지금 무엇을 쓰는지만 보인다.
 function drawCustom(box, items){
-  box.innerHTML = '';
+  CUSTOM_STATE = items;
+  box.textContent = '';
   if (!items.length) return;
-  const head = document.createElement('div');
-  head.className = 'sectitle custom';
-  head.textContent = '내 양식';
-  box.appendChild(head);
+  box.appendChild(el('div', 'sectitle custom', '내 양식'));
   for (const it of items) {
-    const a = document.createElement('a');
-    a.className = 'doclink' + (it.exists ? '' : ' none');
+    const a = el('a', 'doclink');
     a.href = '#';
     a.style.paddingLeft = 'var(--sp-3)';
-    const t = document.createElement('span');
-    t.textContent = it.name;
-    t.style.overflow = 'hidden';
-    t.style.textOverflow = 'ellipsis';
-    a.appendChild(t);
+    a.appendChild(el('span', '', it.name));
     if (it.mine && it.exists) {
       a.dataset.path = it.path;
-      if (it.path === current) a.classList.add('on');
       a.onclick = e => { e.preventDefault(); openReport(it.path); };
     } else {
-      // 쓸지 말지는 설정에서 정한다. 여기서는 지금 무엇을 쓰는지만 보인다
       a.classList.add('none');
-      const tag = document.createElement('span');
-      tag.className = 'chip';
-      tag.textContent = it.mine ? '다음 실행에 생김' : '기본값';
-      a.appendChild(tag);
-      a.onclick = e => { e.preventDefault(); $('tabConfig').click(); };
+      a.appendChild(el('span', 'chip', it.mine ? '다음 실행에 생김' : '기본값'));
+      a.onclick = e => { e.preventDefault(); openConfig(); };
     }
     box.appendChild(a);
   }
 }
 
+/* ============================================================ 문서 열기 */
+function canLeave(){
+  if (dirty) {
+    if (!confirm('저장하지 않은 수정이 있습니다. 그래도 넘어갈까요?')) return false;
+    dirty = false;
+  }
+  if (confDirty) {
+    if (!confirm('저장하지 않은 설정이 있습니다. 그래도 넘어갈까요?')) return false;
+    confDirty = false;
+  }
+  return true;
+}
 async function openReport(path){
-  if (dirty && !confirm('저장하지 않은 수정이 있습니다. 그래도 넘어갈까요?')) return;
-  const d = await (await fetch(api('report', path ? { path } : {}))).json();
-  raw = d.text; current = d.path; dirty = false;
-  $('rawView').textContent = raw;
+  if (!canLeave()) return;
+  const r = await fetch(api('report', path ? { path } : {}));
+  if (!r.ok) { setState('열지 못했습니다', 'warn'); return; }
+  const d = await r.json();
+  raw = d.text; orig = d.text; current = d.path;
+  dirty = false; editing = false; cellEditing = null; view = 'doc';
   $('src').value = raw;
-  $('src').hidden = true;
-  let next = mode === 'readme' || mode === 'config' ? 'preview' : mode;
-  if (current && !/\.md$/i.test(current)) next = 'raw';   // 실행 기록 같은 것
-  show(next);
+  $('rawView').textContent = raw;
+  $('editor').classList.remove('showlive');
+  // 실행 기록처럼 마크다운이 아닌 것은 꾸미지 않는다
+  if (current && !/\.md$/i.test(current)) mode = 'raw';
+  setState('');
+  paint();
+  $('sheet').scrollTop = 0;
+  if (narrow() && window.innerWidth <= 860) hideSide();
+}
+function setRaw(text, mark){
+  raw = text;
+  $('src').value = text;
+  $('rawView').textContent = text;
+  if (mark) { dirty = true; setState('수정 중', 'warn'); }
 }
 
-function jobCard(j){
-  const label = j.mode === 'daily' ? '일일보고' : '주간보고';
-  let el = $('job-' + j.id);
-  if (!el) { el = document.createElement('div'); el.id = 'job-' + j.id; $('jobs').appendChild(el); }
-  el.className = 'job ' + j.state;
-  if (j.state === 'running') {
-    el.innerHTML = '<div class="row"><span class="what">' + label + ' 만드는 중</span>'
-                 + '<span class="time">' + j.seconds + '초</span></div>'
-                 + '<div class="bar"><i></i></div>';
-  } else if (j.state === 'done') {
-    el.innerHTML = '<div class="row"><span class="dot"></span><span class="what">' + label + ' 완료</span>'
-                 + '<span class="time">' + j.seconds + '초</span><span class="x">&times;</span></div>'
-                 + (j.path ? '<div class="note"><a href="#" data-open="' + j.path + '">열기: ' + j.path + '</a></div>' : '');
-  } else if (j.state === 'skipped') {
-    el.innerHTML = '<div class="row"><span class="dot"></span><span class="what">' + label + ' 건너뜀</span>'
-                 + '<span class="time">' + j.seconds + '초</span><span class="x">&times;</span></div>'
-                 + '<div class="note">다른 실행이 진행 중이어서 물러났습니다</div>';
+/* ============================================================ 표 칸 고치기
+   보고서에서 손대는 곳은 대개 수행 업무 표의 칸 하나다. 그걸 위해 원문
+   전체를 열면 파이프 기호 사이에서 그 칸을 찾아야 한다. 두 번 눌러 그
+   자리에서 고치고, 바꾼 값은 그 줄만 다시 쓴다. */
+function startCell(td){
+  if (cellEditing) return;
+  const ln = +td.dataset.ln, c = +td.dataset.c;
+  const parts = splitRow(raw.split(/\r?\n/)[ln] || '');
+  if (parts[c] === undefined) return;
+  cellEditing = td;
+  td.textContent = parts[c].trim();
+  td.classList.add('on');
+  td.contentEditable = 'true';
+  td.focus();
+  const r = document.createRange();
+  r.selectNodeContents(td);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(r);
+  setState('칸을 고치는 중 - Enter 끝냄, Tab 다음 칸, Esc 취소', 'warn');
+}
+function closeCell(){
+  const td = cellEditing;
+  cellEditing = null;
+  if (td) { td.contentEditable = 'false'; td.classList.remove('on'); }
+  return td;
+}
+function commitCell(step){
+  const td = cellEditing;
+  if (!td) return;
+  const ln = +td.dataset.ln, c = +td.dataset.c;
+  // 칸 안의 세로줄은 표를 쪼개므로 받지 않는다. 줄바꿈도 한 칸은 한 줄이다
+  const value = td.textContent.replace(/\s+/g, ' ').replace(/\|/g, '/').trim();
+  closeCell();
+  const lines = raw.split(/\r?\n/);
+  const parts = splitRow(lines[ln] || '');
+  if (parts[c] !== undefined && parts[c].trim() !== value) {
+    parts[c] = ' ' + value + ' ';
+    lines[ln] = '|' + parts.join('|') + '|';
+    setRaw(lines.join('\n'), true);
   } else {
-    el.innerHTML = '<div class="row"><span class="dot"></span><span class="what">' + label + ' 실패</span>'
-                 + '<span class="time">' + j.seconds + '초</span><span class="x">&times;</span></div>'
-                 + '<div class="note">runlog 폴더의 실행 기록을 확인하세요</div>';
+    setState(dirty ? '수정 중' : '', dirty ? 'warn' : '');
   }
-  const x = el.querySelector('.x');
-  // 서버가 작업을 계속 들고 있으면 다음 폴링이 카드를 다시 만든다.
-  // 화면에서 지우기 전에 서버에서 먼저 뺀다.
-  if (x) x.onclick = async () => {
-    el.remove();
-    try { await fetch(api('dismiss', { id: j.id }), { method:'POST' }); } catch (e) {}
-  };
-  const a = el.querySelector('a[data-open]');
-  if (a) a.onclick = e => { e.preventDefault(); loadFiles().then(() => openReport(a.dataset.open)); };
+  renderPreview();
+  layout();
+  if (step) {
+    const nxt = $('view').querySelector('td[data-ln="' + ln + '"][data-c="' + (c + step) + '"]');
+    if (nxt) startCell(nxt);
+  }
+}
+function cancelCell(){
+  if (!cellEditing) return;
+  closeCell();
+  setState(dirty ? '수정 중' : '', dirty ? 'warn' : '');
+  renderPreview();
+}
+
+/* ============================================================ 만들기 */
+function jobCard(j){
+  const label = (j.mode === 'daily' ? '일일보고' : '주간보고') + (j.external ? ' (예약 실행)' : '');
+  let box = $('job-' + j.id);
+  if (!box) { box = el('div'); box.id = 'job-' + j.id; $('jobs').appendChild(box); }
+  box.className = 'job ' + j.state;
+  box.textContent = '';
+
+  const row = el('div', 'row');
+  if (j.state !== 'running') row.appendChild(el('span', 'dot'));
+  const tail = j.state === 'running' ? (j.phase === 'write' ? ' - 보고서 쓰는 중' : ' - 기록 모으는 중')
+             : j.state === 'done' ? ' 완료'
+             : j.state === 'skipped' ? ' 건너뜀' : ' 실패';
+  row.appendChild(el('span', 'what', label + tail));
+  row.appendChild(el('span', 'time', j.seconds + '초'));
+  if (j.state !== 'running') {
+    const x = el('button', 'x');
+    x.title = '닫기';
+    x.innerHTML = '<svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 5l10 10M15 5L5 15"/></svg>';
+    x.onclick = async () => {
+      box.remove();
+      // 서버가 작업을 계속 들고 있으면 다음 폴링이 카드를 다시 만든다
+      try { await fetch(api('dismiss', { id: j.id }), { method:'POST' }); } catch (e) {}
+    };
+    row.appendChild(x);
+  }
+  box.appendChild(row);
+
+  if (j.state === 'running') {
+    const bar = el('div', 'bar');
+    bar.appendChild(el('i'));
+    box.appendChild(bar);
+  } else if (j.state === 'done') {
+    const note = el('div', 'note');
+    const paths = j.paths && j.paths.length ? j.paths : (j.path ? [j.path] : []);
+    for (const p of paths) {
+      const a = el('a', '', titleOf(p));
+      a.href = '#';
+      a.onclick = e => { e.preventDefault(); loadFiles().then(() => openReport(p)); };
+      note.appendChild(a);
+    }
+    if (!paths.length) note.appendChild(document.createTextNode('새로 쓰인 보고서가 없습니다'));
+    box.appendChild(note);
+  } else if (j.state === 'skipped') {
+    box.appendChild(el('div', 'note', '다른 실행이 진행 중이어서 물러났습니다'));
+  } else {
+    box.appendChild(el('div', 'note', '보고 폴더의 runlog에 이유가 남습니다'));
+  }
 }
 
 let polling = false;
 async function pollJobs(){
-  const list = await (await fetch(api('jobs'))).json();
+  let list;
+  try { list = await (await fetch(api('jobs'))).json(); }
+  catch (e) { polling = false; return; }
+  const alive = new Set(list.map(j => 'job-' + j.id));
+  // 서버가 더 들고 있지 않은 카드는 치운다 (예약 실행이 끝난 경우)
+  [...$('jobs').children].forEach(c => { if (!alive.has(c.id)) c.remove(); });
   let running = false;
   for (const j of list) { jobCard(j); if (j.state === 'running') running = true; }
-  if (running) setTimeout(pollJobs, 1500);
+  if (running) { polling = true; setTimeout(pollJobs, 1500); }
   else { polling = false; loadFiles(); }
 }
 async function run(kind){
   await fetch(api('run', { mode: kind }), { method: 'POST' });
   if (!polling) { polling = true; pollJobs(); }
 }
+
+/* ============================================================ 설정
+   화면에서 고치는 항목만 둔다. 설치가 채우는 경로 값은 여기에 없다. */
+const WEEKDAYS = [
+  { v:'Monday', t:'월요일' }, { v:'Tuesday', t:'화요일' }, { v:'Wednesday', t:'수요일' },
+  { v:'Thursday', t:'목요일' }, { v:'Friday', t:'금요일' },
+  { v:'Saturday', t:'토요일' }, { v:'Sunday', t:'일요일' }
+];
+const FIELDS = [
+  { h:'보고서' },
+  { k:'author',       t:'text',   label:'작성자', size:'short' },
+  { k:'agent',        t:'select', label:'실행 CLI', opts:['claude', 'codex'] },
+  { k:'submit_url',   t:'text',   label:'제출 화면 주소', size:'long',
+    hint:'비우면 제출 단추가 사라진다' },
+  { k:'submit_label', t:'text',   label:'제출 단추 문구', size:'mid' },
+  { k:'notify',       t:'bool', def:true, label:'알림 사용' },
+
+  { h:'내 양식',
+    note:'켜는 순간 기본값이 보고 폴더의 custom\\ 에 복사된다.\n끄면 기본값으로 돌아가고, 고쳐 둔 파일은 지워지지 않는다' },
+  { k:'custom_format',  t:'bool', def:false, label:'내 보고서 양식 쓰기',
+    file:'custom/report-format.md', hint:'보고서 양식을 통째로 바꾼다' },
+  { k:'custom_rules',   t:'bool', def:false, label:'내 글쓰기 문체 쓰기',
+    file:'custom/writing-rules.md', hint:'기본 원칙 뒤에 덧붙인다' },
+  { k:'custom_samples', t:'bool', def:false, label:'내 보고서 따라하기',
+    file:'custom/my-reports.md',
+    hint:'붙여넣은 지난 보고서를 문체 예시로 쓴다.' +
+         '\n보고서 맨 앞에 그 문체로 쓴 제출문 절이 생긴다.' +
+         '\n붙여넣은 것이 없으면 아무 일도 하지 않는다' },
+
+  { h:'수집' },
+  { k:'mine_only', t:'bool', def:true, label:'내 이메일의 커밋만' },
+  { k:'redact',    t:'bool', def:true, label:'키·토큰 가리기' },
+  { k:'exclude_repos', t:'lines', label:'제외할 저장소',
+    hint:'한 줄에 하나. 경로에 그 글자가 들어가면 제외된다.' +
+         '\nex. my-project' +
+         '\n폴더 이름만 적는 편이 확실하다. 저장소를 옮겨도 계속 걸린다.' +
+         '\nex. /c/Users/me/project/my-project → 안 걸린다 (Git Bash 형식)' },
+  { k:'exclude_paths', t:'lines', label:'작업으로 안 치는 경로',
+    hint:'한 줄에 하나. 경로에 그 글자가 들어가면 뺀다.' +
+         '\nex. node_modules' +
+         '\nex. \\build\\  (구분자는 \\ 로 적는다)' },
+
+  { h:'실행' },
+  { k:'backfill_days',    t:'num', label:'빠뜨린 날 채우기', hint:'며칠 전까지. 0이면 안 함' },
+  { k:'retain_months',    t:'num', label:'수집본 보관(개월)',
+    hint:'0이면 전부 보관. 보고서는 지우지 않음' },
+  { k:'weekly.end_day',   t:'select', label:'주간 마지막 요일', opts:WEEKDAYS },
+  { k:'weekly.span_days', t:'num', label:'주간 기간(일)' },
+
+  { h:'실행 파일', note:'비워 두면 자동으로 찾는다. 흐린 글씨가 지금 찾아 둔 경로다' },
+  { k:'claude_bin', t:'text', label:'claude 경로', size:'long', probe:'claude', hint:'찾는 중...' },
+  { k:'codex_bin',  t:'text', label:'codex 경로',  size:'long', probe:'codex',  hint:'찾는 중...' },
+  { k:'python_bin', t:'text', label:'python 경로', size:'long', probe:'python', hint:'찾는 중...' },
+];
+let CUSTOM_STATE = [];
 
 // 빈 칸이 "설정이 안 됐다"로 읽히지 않게, 지금 쓰는 경로를 흐린 글씨로 채운다.
 // 값이 아니라 안내이므로 저장해도 덮어쓰지 않는다 - 비워 두면 계속 자동으로 찾는다
@@ -1202,182 +1643,323 @@ async function fillBins(){
   catch (e) { found = {}; }
   for (const f of FIELDS) {
     if (!f.probe) continue;
-    const el = $('f_' + f.k.replace('.', '_'));
-    if (!el) continue;
+    const input = $('f_' + f.k.replace('.', '_'));
+    if (!input) continue;
     const got = found[f.probe];
-    el.placeholder = got ? got.path : '찾지 못했습니다';
-    const hint = el.parentNode.querySelector('.hint');
+    input.placeholder = got ? got.path : '찾지 못했습니다';
+    const row = input.closest('.field');
+    const hint = row && row.querySelector('.hint');
     if (!hint) continue;
-    hint.textContent = got
-      ? '자동으로 찾았습니다 — ' + got.version + '. 다른 걸 쓰려면 전체 경로를 적으세요'
-      : '자동으로 찾지 못했습니다. 전체 경로를 적어 주세요';
+    hint.textContent = got ? '자동으로 찾았습니다 - ' + got.version
+                           : '자동으로 찾지 못했습니다. 전체 경로를 적어 주세요';
   }
 }
 
 function drawConfig(){
   const box = $('confView');
-  box.innerHTML = '';
-  const h = document.createElement('h1');
-  h.textContent = '설정';
-  box.appendChild(h);
-  const note = document.createElement('div');
-  note.className = 'hint';
-  note.style.gridColumn = 'auto';
-  note.style.margin = '-12px 0 20px';
-  note.textContent = '다음 실행부터 적용됩니다';
-  box.appendChild(note);
+  box.textContent = '';
+  box.appendChild(el('div', 'lede', '바꾼 값은 다음 실행부터 적용됩니다.'));
 
-  let card = document.createElement('div');
-  card.className = 'card';
-  box.appendChild(card);
-
+  let card = null;
   for (const f of FIELDS) {
     if (f.h) {
-      card = document.createElement('div');
-      card.className = 'card';
-      const t = document.createElement('h3');
-      t.textContent = f.h;
-      card.appendChild(t);
+      card = el('div', 'card');
+      card.appendChild(el('h3', '', f.h));
+      if (f.note) {
+        const n = el('div', 'hint', f.note);
+        n.style.gridColumn = 'auto';
+        n.style.margin = '0 0 ' + '4px';
+        card.appendChild(n);
+      }
       box.appendChild(card);
       continue;
     }
-    const row = document.createElement('div');
-    row.className = 'field';
-    const lab = document.createElement('label');
-    lab.textContent = f.label;
+    if (!card) { card = el('div', 'card'); box.appendChild(card); }
+
+    const row = el('div', 'field');
+    const lab = el('label', '', f.label);
     row.appendChild(lab);
-    let el;
+
+    let input;
     const val = dig(conf, f.k);
     if (f.t === 'bool') {
-      el = document.createElement('input');
-      el.type = 'checkbox';
-      el.className = 'switch';
+      input = el('input');
+      input.type = 'checkbox';
+      input.className = 'switch';
       // 값이 없으면 항목이 정한 기본값이다. 전부 켜짐으로 그리면 기본이
       // 거짓인 설정이 저장하는 순간 켜져 버린다.
-      el.checked = (val === undefined || val === null) ? !!f.def : !!val;
+      input.checked = (val === undefined || val === null) ? !!f.def : !!val;
     } else if (f.t === 'num') {
-      el = document.createElement('input');
-      el.type = 'number';
-      el.value = val == null ? '' : val;
+      input = el('input');
+      input.type = 'number';
+      input.value = val == null ? '' : val;
     } else if (f.t === 'select') {
-      el = document.createElement('select');
+      input = el('select');
       for (const o of f.opts) {
-        const op = document.createElement('option');
-        op.value = o; op.textContent = o;
-        el.appendChild(op);
+        const op = el('option');
+        op.value = (o && o.v !== undefined) ? o.v : o;
+        op.textContent = (o && o.t !== undefined) ? o.t : o;
+        input.appendChild(op);
       }
-      el.value = val || f.opts[0];
+      const first = f.opts[0];
+      input.value = val || ((first && first.v !== undefined) ? first.v : first);
     } else if (f.t === 'lines') {
-      el = document.createElement('textarea');
-      el.className = 'lines';
-      el.value = (val || []).join('\n');
+      input = el('textarea');
+      input.className = 'lines';
+      input.value = (val || []).join('\n');
     } else {
-      el = document.createElement('input');
-      el.type = 'text';
-      el.className = f.size || 'mid';
-      el.value = val == null ? '' : val;
+      input = el('input');
+      input.type = 'text';
+      input.className = f.size || 'mid';
+      input.value = val == null ? '' : val;
     }
-    el.dataset.key = f.k;
-    el.dataset.type = f.t;
-    lab.htmlFor = 'f_' + f.k.replace('.', '_');
-    el.id = lab.htmlFor;
-    row.appendChild(el);
-    if (f.hint) {
-      const hint = document.createElement('div');
-      hint.className = 'hint';
-      hint.textContent = f.hint;
-      row.appendChild(hint);
+    input.dataset.key = f.k;
+    input.dataset.type = f.t;
+    input.id = 'f_' + f.k.replace('.', '_');
+    lab.htmlFor = input.id;
+
+    // 켜고 끄는 곳과 고치러 가는 곳이 갈라져 있으면 한 가지 일이 두 화면에
+    // 나뉜다. 켜져 있고 파일이 있으면 그 자리에서 열 수 있게 한다.
+    if (f.file) {
+      const withOpen = el('div', 'with');
+      withOpen.appendChild(input);
+      const state = CUSTOM_STATE.filter(c => c.path === f.file)[0];
+      if (state && state.exists && input.checked) {
+        const a = el('a', 'open', '열어서 고치기');
+        a.href = '#';
+        a.onclick = e => { e.preventDefault(); openReport(f.file); };
+        withOpen.appendChild(a);
+      }
+      row.appendChild(withOpen);
+    } else {
+      row.appendChild(input);
     }
+
+    if (f.hint) row.appendChild(el('div', 'hint', f.hint));
     card.appendChild(row);
   }
 
-  // 저장은 문서 화면과 같은 자리에서 한다: 위쪽 동작 줄의 단추와 그 옆 알림
+  // 저장하지 않고 떠나면 조용히 사라지던 것을 막는다
+  box.oninput = () => { if (!confDirty) { confDirty = true; setState('수정 중', 'warn'); } };
+  box.onchange = box.oninput;
+
   $('confSave').onclick = async () => {
     const out = { weekly: {} };
-    box.querySelectorAll('[data-key]').forEach(el => {
-      const k = el.dataset.key, t = el.dataset.type;
+    box.querySelectorAll('[data-key]').forEach(input => {
+      const k = input.dataset.key, t = input.dataset.type;
       let v;
-      if (t === 'bool') v = el.checked;
-      else if (t === 'num') v = el.value === '' ? 0 : Number(el.value);
-      else if (t === 'lines') v = el.value.split(/\r?\n/);
-      else v = el.value;
-      if (k.startsWith('weekly.')) out.weekly[k.slice(7)] = v; else out[k] = v;
+      if (t === 'bool') v = input.checked;
+      else if (t === 'num') v = input.value === '' ? 0 : Number(input.value);
+      else if (t === 'lines') v = input.value.split(/\r?\n/);
+      else v = input.value;
+      if (k.indexOf('weekly.') === 0) out.weekly[k.slice(7)] = v; else out[k] = v;
     });
-    const r = await fetch(api('config'), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(out) });
-    if (!r.ok) { setState('저장하지 못했습니다', true); return; }
+    const r = await fetch(api('config'), { method:'POST',
+      headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(out) });
+    if (!r.ok) { setState('저장하지 못했습니다', 'warn'); return; }
     conf = await r.json();
+    confDirty = false;
     // 양식 토글을 바꿨으면 왼쪽 목록이 바로 따라와야 한다. 켜면 그 자리에서
     // 파일이 생기므로 새로 고치지 않아도 열 수 있다.
-    loadFiles();
+    await loadFiles();
+    drawConfig();
+    fillBins();
     flash('저장했습니다');
   };
 }
 
-// 첫 화면은 가장 최근 보고서다. 길을 잃으면 여기로 돌아온다
-$('home').onclick = () => { mode = 'preview'; openReport(''); };
-$('toggleSide').onclick = () => $('side').classList.toggle('hide');
-$('tabPreview').onclick = () => show('preview');
-$('tabRaw').onclick = () => show('raw');
-if ($('tabReadme')) $('tabReadme').onclick = async () => {
-  if (readme === null) readme = await (await fetch(api('readme'))).text();
-  show('readme');
-};
-$('tabConfig').onclick = async () => {
-  if (conf === null) conf = await (await fetch(api('config'))).json();
-  drawConfig();
-  show('config');
-  fillBins();
-};
-$('runDaily').onclick = () => run('daily');
-$('runWeekly').onclick = () => run('weekly');
-$('edit').onclick = () => {
-  const was = editing();
-  $('src').hidden = was;
-  if (was) { raw = $('src').value; $('rawView').textContent = raw; }
-  show(mode === 'readme' || mode === 'config' ? 'preview' : mode);
-};
-$('save').onclick = async () => {
-  const body = $('src').value;
-  const r = await fetch(api('report', { path: current }),
-                        { method:'POST', headers:{'Content-Type':'text/plain; charset=utf-8'}, body });
-  if (r.ok) { raw = body; dirty = false; $('rawView').textContent = raw; show(mode); flash('저장했습니다'); }
-  else { setState('저장하지 못했습니다', true); }
-};
-$('src').oninput = () => { dirty = true; setState('수정 중', true); fitSrc(); };
-// 제출문 절이 있으면 그것만, 없으면 보고서 전체를 준다. 무엇을 담았는지는
-// 눌렀을 때 말해 준다 - 조용히 일부만 복사되면 붙여넣고 나서야 안다.
+/* ============================================================ 복사와 제출
+   제출문 절이 있으면 그것만, 없으면 보고서 전체를 준다. 무엇을 담았는지는
+   단추 이름과 눌렀을 때의 말로 알린다 - 조용히 일부만 복사되면 붙여넣고
+   나서야 안다. */
 function toCopy(){
-  const lines = text().split(/\r?\n/);
+  const lines = (editing ? $('src').value : raw).split(/\r?\n/);
   const isHead = s => /^##\s/.test(s);
   let start = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (isHead(lines[i]) && lines[i].includes(SUBMIT_HEAD)) { start = i + 1; break; }
+    if (isHead(lines[i]) && lines[i].indexOf(SUBMIT_HEAD) >= 0) { start = i + 1; break; }
   }
-  if (start < 0) return { body: text(), part: false };
+  if (start < 0) return { body: lines.join('\n'), part: false };
   let end = lines.length;
   for (let i = start; i < lines.length; i++) { if (isHead(lines[i])) { end = i; break; } }
   const body = lines.slice(start, end).join('\n').trim();
-  return body ? { body: body, part: true } : { body: text(), part: false };
+  return body ? { body: body, part: true } : { body: lines.join('\n'), part: false };
 }
+
+/* ============================================================ 화면 밝기 */
+const THEME_ICON = {
+  system:'<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="6.4"/><path d="M10 3.6a6.4 6.4 0 0 1 0 12.8z" fill="currentColor" stroke="none"/></svg>',
+  light:'<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="10" cy="10" r="3.4"/><path d="M10 2.2v1.6M10 16.2v1.6M17.8 10h-1.6M3.8 10H2.2M15.5 4.5l-1.1 1.1M5.6 14.4l-1.1 1.1M15.5 15.5l-1.1-1.1M5.6 5.6 4.5 4.5"/></svg>',
+  dark:'<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M15.8 12.6A6.3 6.3 0 0 1 7.4 4.2a6.5 6.5 0 1 0 8.4 8.4z"/></svg>'
+};
+const THEME_NAME = { system:'자동', light:'밝게', dark:'어둡게' };
+function applyTheme(t){
+  if (t === 'system') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', t);
+  $('theme').innerHTML = THEME_ICON[t];
+  $('theme').title = '화면 밝기: ' + THEME_NAME[t];
+  $('theme').dataset.now = t;
+  try { localStorage.setItem('wr-theme', t); } catch (e) {}
+}
+
+/* ============================================================ 왼쪽 레일 접기 */
+function syncScrim(){
+  const need = window.innerWidth <= 860 && !$('side').classList.contains('hide');
+  let s = document.querySelector('.scrim');
+  if (need && !s) {
+    s = el('div', 'scrim');
+    s.onclick = () => { $('side').classList.add('hide'); syncScrim(); };
+    document.querySelector('.main').appendChild(s);
+  }
+  if (!need && s) s.remove();
+}
+function hideSide(){ $('side').classList.add('hide'); syncScrim(); }
+
+/* ============================================================ 이어 붙이기 */
+$('home').onclick = () => { mode = 'preview'; openReport(''); };
+$('toggleSide').onclick = () => { $('side').classList.toggle('hide'); syncScrim(); };
+$('theme').onclick = () => {
+  const order = ['system', 'light', 'dark'];
+  const now = $('theme').dataset.now || 'system';
+  applyTheme(order[(order.indexOf(now) + 1) % order.length]);
+};
+$('tabPreview').onclick = () => {
+  if (editing) { $('editor').classList.add('showlive'); renderLive(); }
+  else mode = 'preview';
+  paint();
+};
+$('tabRaw').onclick = () => {
+  if (editing) $('editor').classList.remove('showlive');
+  else mode = 'raw';
+  paint();
+};
+$('tabReadme').onclick = async () => {
+  if (!canLeave()) return;
+  if (readme === null) readme = await (await fetch(api('readme'))).text();
+  view = 'readme'; editing = false;
+  paint();
+  $('sheet').scrollTop = 0;
+};
+async function openConfig(){
+  if (!canLeave()) return;
+  if (conf === null) conf = await (await fetch(api('config'))).json();
+  view = 'config'; editing = false;
+  drawConfig();
+  paint();
+  $('sheet').scrollTop = 0;
+  fillBins();
+}
+$('tabConfig').onclick = openConfig;
+$('runDaily').onclick = () => run('daily');
+$('runWeekly').onclick = () => run('weekly');
+$('prev').onclick = () => { const n = neighborsOf(current).prev; if (n) openReport(n.path); };
+$('next').onclick = () => { const n = neighborsOf(current).next; if (n) openReport(n.path); };
+$('q').oninput = applyFilter;
+$('clearq').onclick = () => { $('q').value = ''; applyFilter(); $('q').focus(); };
+
+$('edit').onclick = () => {
+  if (cellEditing) commitCell(0);
+  editing = true;
+  $('editor').classList.toggle('showlive', false);
+  paint();
+  renderLive();
+  setTimeout(() => $('src').focus(), 0);
+};
+$('cancel').onclick = () => {
+  if (dirty && !confirm('고친 것을 버리고 저장된 내용으로 돌아갑니다. 계속할까요?')) return;
+  const had = dirty;
+  setRaw(orig, false);
+  dirty = false; editing = false; cellEditing = null;
+  setState('');
+  paint();
+  if (had) flash('되돌렸습니다');
+};
+$('save').onclick = async () => {
+  if (cellEditing) commitCell(0);
+  const body = editing ? $('src').value : raw;
+  const r = await fetch(api('report', { path: current }),
+                        { method:'POST', headers:{ 'Content-Type':'text/plain; charset=utf-8' }, body: body });
+  if (!r.ok) { setState('저장하지 못했습니다', 'warn'); return; }
+  raw = body; orig = body; dirty = false;
+  $('rawView').textContent = raw;
+  if (!editing) renderPreview();
+  layout();
+  flash('저장했습니다');
+};
+let liveTimer = null;
+$('src').oninput = () => {
+  raw = $('src').value;
+  if (!dirty) { dirty = true; setState('수정 중', 'warn'); layout(); }
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(renderLive, 180);
+};
 $('copy').onclick = async () => {
   const c = toCopy();
-  await navigator.clipboard.writeText(c.body);
+  try { await navigator.clipboard.writeText(c.body); }
+  catch (e) { setState('복사하지 못했습니다', 'warn'); return; }
   flash(c.part ? '제출문을 복사했습니다' : '클립보드에 복사했습니다');
 };
-if ($('submit')) $('submit').onclick = async () => {
+$('submit').onclick = async () => {
   const c = toCopy();
   try { await navigator.clipboard.writeText(c.body); } catch (e) {}
   flash(c.part ? '제출문을 복사했습니다. 붙여넣으세요' : '복사했습니다. 붙여넣으세요');
-  window.open(SUBMIT_URL, '_blank');
+  window.open(SUBMIT_URL, '_blank', 'noopener');
 };
-window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+$('view').addEventListener('dblclick', e => {
+  const td = e.target.closest ? e.target.closest('td[data-ln]') : null;
+  if (td && canCells()) startCell(td);
+});
+$('view').addEventListener('keydown', e => {
+  if (!cellEditing) return;
+  if (e.key === 'Enter') { e.preventDefault(); commitCell(0); }
+  else if (e.key === 'Tab') { e.preventDefault(); commitCell(e.shiftKey ? -1 : 1); }
+  else if (e.key === 'Escape') { e.preventDefault(); cancelCell(); }
+});
+$('view').addEventListener('focusout', e => { if (cellEditing && e.target === cellEditing) commitCell(0); });
+
+window.addEventListener('resize', () => { syncScrim(); layout(); });
+window.addEventListener('beforeunload', e => {
+  if (dirty || confDirty) { e.preventDefault(); e.returnValue = ''; }
+});
 document.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 's' && editing()) { e.preventDefault(); $('save').click(); }
+  const t = e.target, tag = (t.tagName || '').toLowerCase();
+  const typing = tag === 'input' || tag === 'textarea' || tag === 'select' || t.isContentEditable;
+  if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+    if (!$('save').hidden) { e.preventDefault(); $('save').click(); }
+    else if (!$('confSave').hidden) { e.preventDefault(); $('confSave').click(); }
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key === '\\') { e.preventDefault(); $('toggleSide').click(); return; }
+  if (e.key === 'Escape') {
+    if (cellEditing) { e.preventDefault(); cancelCell(); }
+    else if (t === $('q') && $('q').value) { $('q').value = ''; applyFilter(); }
+    else if (editing) { e.preventDefault(); $('cancel').click(); }
+    return;
+  }
+  if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === '/') { e.preventDefault(); $('q').focus(); $('q').select(); }
+  else if (e.key === '[' && !$('flip').hidden && !$('prev').disabled) $('prev').click();
+  else if (e.key === ']' && !$('flip').hidden && !$('next').disabled) $('next').click();
 });
 
 (async () => {
-  try { await openReport(START); await loadFiles(); }
-  catch (e) { $('view').innerHTML = '<p>보고서를 읽지 못했습니다: ' + esc(String(e)) + '</p>'; }
+  let saved = 'system';
+  try { saved = localStorage.getItem('wr-theme') || 'system'; } catch (e) {}
+  applyTheme(saved);
+  if (!HAS_README) $('tabReadme').hidden = true;
+  if (window.innerWidth <= 860) $('side').classList.add('hide');
+  const now = new Date();
+  $('runDaily').title = '오늘(' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) + ')까지 모아서 다시 만든다';
+  $('runWeekly').title = '이번 주간 구간을 다시 만든다';
+  try {
+    await loadFiles();
+    await openReport(START);
+  } catch (e) {
+    $('view').innerHTML = '<p>보고서를 읽지 못했습니다: ' + esc(String(e)) + '</p>';
+  }
+  // 새로 고치기 전에 시작한 작업과 예약 실행도 여기서 이어 받는다
+  pollJobs();
 })();
 </script>
 </body></html>
