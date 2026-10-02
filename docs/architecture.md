@@ -1,207 +1,156 @@
-# 구조
+# work-report 아키텍처
 
-work-report는 AI 대화 기록과 git 이력에서 그날 한 일을 뽑아 보고서를 만들고,
-그 보고서를 회사 PMS의 일일보고 폼에 채워 주는 도구다. Windows에서 돌고,
-한 사람의 PC 안에서 끝난다. 서버도 없고 외부로 나가는 것은 PMS뿐이다.
+이 문서는 work-report의 책임 경계와 실행 흐름을 설명한다. 구현 위치와 데이터 흐름을 기준으로 작성하며, 특정 변경 작업의 순서나 완료 조건은 다루지 않는다.
 
-이 문서는 **지금 무엇이 어디 있는지**를 적는다. 고칠 계획은 `refactor-plan.md`에 있다.
+## 시스템 경계
 
-## 네 가지 일
+work-report는 로컬에서 다음 기능을 제공한다.
 
-도구가 하는 일은 넷이고, 서로 다른 시점에 다른 주체가 실행한다.
+1. **보고서 수집·작성**은 대화 기록, Git 이력, 사용자가 지정한 파일을 모아 Markdown 보고서를 만든다.
+2. **로컬 뷰어**는 보고서와 실행 상태를 임시 HTTP 서버로 보여 주고 저장·실행 요청을 처리한다.
+3. **PMS 연동**은 브라우저로 프로젝트 관리 시스템의 설정과 이슈를 조회하거나 폼을 채운다.
 
-| 일 | 언제 | 누가 실행하나 |
-|---|---|---|
-| 수집 | 보고서를 만들 때 | `collect.ps1` → `collect.py` |
-| 보고서 쓰기 | 수집 다음 | AI 에이전트 (Claude Code 또는 Codex) |
-| 보기·고치기 | 사람이 열 때 | `viewer.py` (로컬 HTTP 서버) |
-| PMS 채우기 | 사람이 누를 때 | `pms.ps1` → `pms.py` → 전용 크롬 |
+PowerShell 진입점은 기능을 연결하지만 수집 규칙, 페이지 동작, 브라우저 자동화의 세부 구현을 소유하지 않는다. 각 기능은 독립적으로 바뀔 수 있도록 Python 모듈과 정적 자산으로 나뉜다.
 
-**AI가 하는 일은 하나뿐이다.** 수집 결과를 읽고 글을 쓰는 것. 나머지는 전부
-결정적인 스크립트다. 에이전트는 `run-report.ps1`이 조립한 한 줄짜리 지시로 불린다.
-
-## 실행 경로
-
-```
-작업 스케줄러 (평일 17:30)
-  또는 뷰어의 "일일보고 만들기"
-        ↓
-run-report.ps1          구간 결정, 잠금, 에이전트 호출, 알림, 결과 판정
-        ↓
-에이전트  ──→ collect.ps1 → collect.py     기록 → raw/<월>/<날짜>.md
-          ──→ (글쓰기)                      → log/, daily/, weekly/
-        ↓
-알림 클릭 → open-path.ps1 → open-viewer.ps1 → viewer.py
-        ↓
-뷰어의 "PMS에 채우기" → pms.ps1 → pms.py → 전용 크롬 → 폼
-        ↓
-사람이 [저장]
+```mermaid
+flowchart LR
+    CLI[PowerShell 진입점] --> COL[수집기]
+    CLI --> VIEW[로컬 뷰어]
+    CLI --> PMS[PMS 연동]
+    COL --> SOURCES[대화·Git·파일 소스]
+    COL --> RENDER[Markdown 렌더러]
+    VIEW --> PAGE[정적 페이지 자산]
+    VIEW --> SERVICES[파일·작업·제출 서비스]
+    PMS --> BROWSER[브라우저 연결]
+    PMS --> RULES[설정·폼·이슈 규칙]
 ```
 
-## 파일
+## SRP 원칙
 
-### 스크립트 (`skill/scripts/`)
+모듈의 단위는 함수 수가 아니라 변경 이유로 정한다. 같은 이유로 함께 바뀌는 코드는 한 모듈에 두고, 다른 이유로 바뀌는 코드는 호출 관계로 연결한다.
 
-| 파일 | 줄 | 하는 일 |
-|---|---|---|
-| `viewer.py` | HTTP 서버와 조립 | 끝점과 페이지 조립. 파일·작업·설정·제출문 기능은 아래 모듈에서 가져온다 |
-| `viewer_files.py` | 보고서 파일·설정 | 보고서 목록, 경로 안전 검사, 사용자 양식, 설정 저장 |
-| `viewer_jobs.py` | 작업 수명주기 | 보고서·PMS 작업 시작과 상태 판정 |
-| `viewer_setup.py` | 시작하기 상태 | 보고서·PMS 준비 상태 집계 |
-| `submission.py` | 제출문 파싱 | 제출문 절을 폼 입력으로 바꾸는 규칙 |
-| `page/index.html`·`app*.js`·`app.css` | 정적 페이지 | 뷰어 화면의 HTML, JavaScript, CSS |
-| `collect.py` | 설정·조립·CLI | 수집기 설정과 기록원 결과를 하나로 묶는다 |
-| `sources_claude.py`·`sources_codex.py` | AI 기록원 | Claude Code와 Codex 세션 기록을 읽는다 |
-| `sources_git.py` | git 기록원 | 커밋과 미커밋 파일을 읽는다 |
-| `sources_files.py` | 파일 기록원 | PC에서 수정된 파일을 읽는다 |
-| `custom_files.py` | 사용자 양식 기록원 | 사용자 양식·문체·예시 파일을 판정한다 |
-| `render.py` | 수집 결과 출력 | 수집 결과를 Markdown으로 렌더링한다 |
-| `prompts.py` | 프롬프트 기록 공통 | 프롬프트 정리와 비밀값 가리기 |
-| `pms.py` | CLI와 작업 조립 | PMS 모드별 진입점과 폼 채우기 조립 |
-| `pms_config.py` | PMS 설정·종료 코드 | 설정 읽기와 `Stop` 계약 |
-| `pms_browser.py` | 브라우저 수명 | 크롬·CDP 연결, 창 상태, 로그인 판정 |
-| `pms_form.py` | PMS 폼 지식 | 선택자, 분류 표, 입력, 제출문 검사 |
-| `pms_harvest.py` | 지난 보고서 수집 | 통계와 문체 예시 파일 쓰기 |
-| `pms_issues.py` | 열린 일감 | API에서 연결 가능한 일감을 받는다 |
-| `_env.ps1` | 경로·설정·에이전트 홈 | 공통 환경 값과 하위 PowerShell 모듈 로딩 |
-| `_bins.ps1` | 실행 파일 탐색 | Python·Claude·Codex 탐색 |
-| `_toast.ps1` | 알림 | Windows 알림과 메시지 파일 읽기 |
-| `_formats.ps1` | 양식 파일 선택 | 보고서 양식·문체·예시 경로 선택 |
-| `_viewer.ps1` | 뷰어 프로세스 | 실행 중인 뷰어 종료 |
-| `_errors.ps1` | 오류 기록 | 한 달 보존 실행 오류 기록 |
-| `run-report.ps1` | 296 | 예약 실행의 본체. 에이전트를 부르고 결과를 판정한다 |
-| `register-appid.ps1` | 138 | 알림 신원과 시작 메뉴 등록 |
-| `secrets.py` | 100 | 비밀값을 DPAPI로 묶어 보관 |
-| `open-path.ps1` | 76 | 알림 클릭이 도착하는 자리 |
-| `_log.py` | 70 | 파이썬 쪽 오류 기록 |
-| `open-viewer.ps1` | 68 | 뷰어를 띄우거나 떠 있는 것을 재사용 |
-| `collect.ps1` | 52 | 수집기 래퍼. 파이썬을 찾아 부른다 |
-| `pms.ps1` | 51 | PMS 래퍼. 같은 이유로 존재한다 |
-| `resolve-bins.ps1` | 40 | 설정 화면에 보여 줄 실행 파일 경로 탐색 |
+- 수집 소스는 입력 형식만 해석하고, 보고서 문단과 Markdown 표현은 `render.py`가 담당한다.
+- `viewer.py`는 HTTP 라우팅과 서비스 조합만 담당한다. 파일·작업·초기 설정·제출은 `viewer_*.py`가, 화면 표현은 `page/`의 HTML·JavaScript·CSS가 담당한다.
+- `pms_browser.py`는 브라우저 연결과 공통 동작만 제공한다. 설정·폼·수집·이슈 규칙은 각각의 `pms_*.py`가 담당한다.
+- PowerShell 환경 책임은 실행 파일 경로, 오류, 출력 형식, 알림, 뷰어 실행 모듈로 나뉜다.
+- 일반 설정과 인증 정보는 각각 `config.json`, `secrets.json`에서 읽는다. 보고서나 로그에 비밀값을 기록하지 않는다.
 
-래퍼(`.ps1`)가 따로 있는 이유는 인터프리터 이름이 PC마다 다르기 때문이다
-(`py`, `python3`, `python`). **파이썬을 직접 부르는 곳은 없다.**
+## 모듈 지도
 
-### 에이전트가 읽는 글
+### 실행 진입점과 환경
 
-| 파일 | 누가 읽나 |
-|---|---|
-| `skill/SKILL.md` | 에이전트. 절차와 지키는 선 |
-| `skill/templates/report-format.md` | 에이전트. 보고서의 절 구성과 제출문 모양 |
-| `skill/templates/writing-rules.md` | 에이전트. 문체 |
-| `skill/templates/my-reports.md` | 보고 폴더로 복사되는 빈 그릇. 지난 제출물이 들어간다 |
-| `skill/GUIDE.md` | 사람. 뷰어의 `사용 설명` 탭 |
+| 위치 | 책임 |
+| --- | --- |
+| `skill/run-report.ps1` | 보고서 수집 실행과 결과 경로 전달 |
+| `skill/collect.ps1` | 수집기 호출과 대화형 옵션 전달 |
+| `skill/pms.ps1` | PMS 명령 선택과 종료 코드 전달 |
+| `skill/open-viewer.ps1` | 뷰어 시작과 브라우저 열기 |
+| `skill/_env.ps1` | 공통 환경 모듈 로드와 호환용 진입점 |
+| `skill/_bins.ps1` | Python·Node·브라우저 실행 파일 탐색 |
+| `skill/_errors.ps1` | 오류 기록과 사용자 오류 변환 |
+| `skill/_formats.ps1` | 출력 형식과 문자열 변환 |
+| `skill/_toast.ps1` | Windows 토스트 알림 |
+| `skill/_viewer.ps1` | 뷰어 프로세스 시작·종료 |
 
-### 설치
+### 보고서 수집
 
-| 파일 | 하는 일 |
-|---|---|
-| `install.cmd` / `install.ps1` | skill 배치, 예약 등록, 알림 신원, playwright 설치 |
-| `uninstall.cmd` / `uninstall.ps1` | 되돌리기. 보고서는 남긴다 |
+| 위치 | 책임 |
+| --- | --- |
+| `skill/scripts/collect.py` | 옵션 해석, 수집 순서 조정, 결과 조합 |
+| `skill/scripts/sources_claude.py` | Claude 대화 기록 탐색·변환 |
+| `skill/scripts/sources_codex.py` | Codex 대화 기록 탐색·변환 |
+| `skill/scripts/sources_git.py` | Git 로그·변경 파일·커밋 정보 수집 |
+| `skill/scripts/sources_files.py` | 추가 파일 읽기와 메타데이터 수집 |
+| `skill/scripts/custom_files.py` | 추가 파일 목록과 경로 규칙 |
+| `skill/scripts/prompts.py` | `skill/prompts/ask.json` 질문과 선택지 로드 |
+| `skill/scripts/render.py` | 수집 결과의 Markdown 렌더링 |
 
-skill은 `%LOCALAPPDATA%\work-report\skills\<이름>`에 한 벌만 두고 에이전트 홈마다
-junction으로 가리킨다. 한 번 고치면 전부 따라오고, 설치가 중간에 실패해도
-에이전트마다 버전이 엇갈리지 않는다.
+소스는 공통 데이터 구조를 반환하고 서로의 저장 형식에 의존하지 않는다. 새 소스는 `sources_*.py`와 `collect.py` 조합 지점에 추가하며, 보고서 문장 변경은 `render.py`에서 처리한다.
 
-## 보고 폴더
+### 로컬 뷰어
 
-기본 위치는 `~\work-report`다. 업데이트가 덮지 않는다.
+| 위치 | 책임 |
+| --- | --- |
+| `skill/scripts/viewer.py` | HTTP 서버, 라우팅, JSON 직렬화, 서비스 조합 |
+| `skill/scripts/viewer_files.py` | 보고서·설정·README·정적 파일 읽기 |
+| `skill/scripts/viewer_jobs.py` | 보고서 작업 시작·조회·정리 |
+| `skill/scripts/viewer_setup.py` | 설치 경로와 초기 설정 준비 |
+| `skill/scripts/submission.py` | 작성 결과 저장과 제출 준비 |
+| `skill/scripts/page/index.html` | 페이지 구조와 브라우저 진입점 |
+| `skill/scripts/page/app.js` | API 호출과 화면 상태 조정 |
+| `skill/scripts/page/app-ui.js` | 보고서·작업·설정 화면 렌더링 |
+| `skill/scripts/page/app-setup.js` | 초기 설정 화면과 설치 흐름 |
+| `skill/scripts/page/app.css` | 레이아웃과 시각 표현 |
 
-```
-daily/<월>/<날짜>.md          제출용 일일 보고서
-weekly/<월>/<시작>_<끝>.md     주간 보고서
-log/<월>/<날짜>.md            한 일 목록 (보고서의 근거)
-raw/<월>/<날짜>.md|.json      수집 원본
-runlog/<월>/                  실행 기록, 클릭 기록, PMS 기록
-runlog/.running               실행 잠금
-runlog/viewer.json            떠 있는 뷰어의 포트와 pid
-custom/                       내 양식·문체·지난 제출물
-pms/my-daily-reports.json     PMS에서 받아 온 내 지난 보고서
-pms/patterns.md               그 보고서를 센 값 (분류 분포, 행 수, 일감 사용)
-pms/open-issues.md            연결할 수 있는 일감
-pms/rows/<날짜>.json          제출문을 폼 입력으로 바꾼 것
-pms/secrets.dat               DPAPI로 묶인 비밀값
-browser/                      PMS 전용 크롬 프로파일
-config.json                   설정
-```
+뷰어는 `127.0.0.1`에 임시 서버를 열고 `GET /files`, `/jobs`, `/config`, `/bins`, `/setup`, `/readme`, `/report`, `/favicon.ico`, 정적 `/page/*`와 `POST /config`, `/run`, `/pms`, `/seen`, `/dismiss`를 제공한다. 페이지는 API 응답을 화면에 표시하며 파일 시스템이나 PMS 브라우저를 직접 다루지 않는다.
 
-**산출물은 월 폴더 아래 둔다.** 해가 쌓여도 한 폴더를 훑을 수 있어야 한다.
-월은 범위의 끝 날짜로 정한다.
+### PMS 연동
 
-## 경계
+| 위치 | 책임 |
+| --- | --- |
+| `skill/scripts/pms.py` | CLI 호환 이름 제공과 PMS 작업 조합 |
+| `skill/scripts/pms_config.py` | URL·프로젝트·필드 설정 읽기 |
+| `skill/scripts/pms_browser.py` | Playwright 연결과 공통 페이지 동작 |
+| `skill/scripts/pms_form.py` | 설정 폼 수집과 정규화 |
+| `skill/scripts/pms_harvest.py` | 보고서·프로젝트 데이터 수집 |
+| `skill/scripts/pms_issues.py` | 이슈 조회·생성·상태 처리 |
+| `skill/scripts/secrets.py` | `secrets.json` 인증 정보 읽기 |
 
-### 설정
+`pms.py`는 외부 호출자에게 기존 함수 이름을 유지하는 어댑터다. 실제 규칙은 세부 모듈에 있으므로 브라우저 연결 방식 변경이 설정·폼·이슈 규칙으로 번지지 않는다. PMS 명령은 `0` 성공, `1` 입력·설정 오류, `2` 인증·브라우저 연결 실패, `3` 대상 미발견, `4` 저장·제출 실패를 반환한다.
 
-`config.json` 하나다. 사람이 고치는 값, 설치가 채우는 값, 그리고 비밀값의
-자리가 나뉜다.
+## 의존성 방향
 
-- 사람이 고치는 값: `author`, `agent`, `notify`, `submit_url`, `exclude_*`,
-  `custom_*`, `backfill_days`, `retain_months`, `weekly.*`, `pms.*`
-- 설치가 채우는 값: `*_homes`, `*_dirs`, `skill_dirs`. 손으로 고치면 깨진다
-- 비밀값: **config.json에 없다.** `pms/secrets.dat`에 DPAPI로 묶여 있다
+의존성은 진입점에서 책임 모듈로 흐른다. 책임 모듈이 상위 진입점을 import하지 않도록 하여 순환 의존성과 실행 환경 의존성을 막는다.
 
-뷰어의 설정 화면은 허용 목록(`EDITABLE`, `WEEKLY_KEYS`, `PMS_KEYS`)에 있는 키만
-저장한다. 토큰은 들어오면 금고로 보내고 설정에는 쓰지 않는다.
+```text
+PowerShell 진입점
+    ├─> collect.py ─> sources_* / custom_files / prompts / render
+    ├─> viewer.py  ─> viewer_files / viewer_jobs / viewer_setup / submission
+    └─> pms.py     ─> pms_config / pms_browser / pms_form / pms_harvest / pms_issues
 
-### 비밀값
-
-`config.json`은 보고 폴더 안에 있고, 러너는 에이전트에게 `--add-dir <보고 폴더>`를
-준다. 즉 **에이전트가 읽을 수 있는 자리다.** 그래서 토큰은 거기 두지 않는다.
-
-DPAPI(`CryptProtectData`)는 같은 PC의 같은 계정에서만 푼다. 파일을 복사해 가도
-다른 계정에서는 열리지 않고, 외울 비밀번호도 추가 설치물도 없다. 읽는 쪽은
-뷰어와 `pms.py`뿐이다.
-
-### PMS
-
-PMS의 일일보고는 Redmine 플러그인이고 **REST API를 내주지 않는다**
-(컨트롤러가 API 인증을 선언하지 않아 `.json` 요청이 403이다). 그래서 폼은
-브라우저로 채운다. 로그인은 SSO라 사람이 한 번 해야 한다.
-
-전용 크롬 프로파일을 쓰는 이유는 Playwright가 **자기가 띄운 브라우저만**
-조작하기 때문이다. 평소 쓰는 크롬은 디버깅 포트 없이 떠 있어 붙을 수 없고,
-같은 프로파일로 다시 띄우면 기존 프로세스에 창만 붙는다. 전용 프로파일에
-한 번 로그인해 두면 세션이 그 폴더에 남는다. 비밀번호는 저장하지 않는다.
-
-코어 Redmine API는 열려 있다. **토큰이 하는 일은 하나**다 — 보고서를 쓰는
-시점에 열린 일감 목록을 받아 오는 것. 그때는 브라우저가 없고 예약 실행이면
-창을 띄울 수도 없다.
-
-### 종료 코드
-
-`pms.ps1`과 뷰어 사이의 약속이다. 사람이 다음에 할 일이 저마다 달라서
-하나로 묶지 않는다.
-
-| 코드 | 뜻 | 화면이 띄우는 것 |
-|---|---|---|
-| 0 | 채웠다 | PMS 창 보기 |
-| 10 | 채울 것이 없어 폼만 열었다 | 안내만 |
-| 2 | 로그인이 필요하다 | 로그인 창 열기 |
-| 3 | 설정이 비었다 | 설정 열기 |
-| 4 | playwright가 없다 | 설치 명령 |
-| 5 | 브라우저를 열 수 없다 | 경로·포트 안내 |
-
-`run-report.ps1`은 따로다. 0은 썼다, 2는 다른 실행이 돌아 건너뛰었다.
-
-### 뷰어 끝점
-
-전부 `127.0.0.1`의 임시 포트에 붙는다. 바깥 출처의 요청은 `Origin`으로 거른다.
-
-```
-GET   /files /jobs /config /bins /setup /readme /report /favicon.ico
-POST  /config /run /pms /seen /dismiss
+공통 하위 계층 ─> secrets.py / 메시지·경로 상수 / 표준 라이브러리·외부 실행기
 ```
 
-## 알아 둘 것
+기존 호출 호환성이 필요한 경우 조정 모듈에서 이름을 재수출하고 구현을 중복하지 않는다.
 
-**제출문이 원본이다.** 뷰어가 보고서의 `## 0. 제출문` 절을 읽어 폼 입력으로
-바꾼다. 에이전트가 기계용 파일을 따로 쓰지 않으므로 사람이 읽는 글과 실제로
-올라가는 내용이 어긋날 수 없다.
+## 실행 흐름
 
-**사람마다 다른 것은 코드에 넣지 않는다.** 어떤 분류를 쓰는지, 작업 항목을
-몇 덩어리로 나누는지, 일감을 연결하는지는 사람마다 다르다. 그래서 규칙으로
-박지 않고 그 사람의 지난 보고서를 세어 `pms/patterns.md`로 넘긴다.
+### 보고서 작성
 
-**근거가 없으면 비운다.** 수집기는 무시한 것을 왜 무시했는지 적고, 폼을
-채우는 쪽은 분류를 고르지 못하면 무엇이 남았는지 말한다. 조용히 지어내는
-것이 가장 나쁘다.
+1. PowerShell 진입점이 날짜, 대상, 추가 파일 옵션을 해석한다.
+2. `collect.py`가 선택된 소스 모듈을 호출한다.
+3. 각 소스가 공통 구조의 항목을 반환한다.
+4. `render.py`가 항목과 프롬프트 응답을 Markdown으로 만든다.
+5. 날짜별 보고서 폴더에 결과를 저장한다.
+
+### 뷰어 사용
+
+1. `open-viewer.ps1`이 `viewer.py`를 실행한다.
+2. 서버가 `page/` 정적 자산과 보고서 API를 제공한다.
+3. `app.js`가 API를 호출하고 `app-ui.js`가 결과를 그린다.
+4. 저장·실행·PMS 요청은 해당 서비스 모듈로 전달된다.
+
+### PMS 조회·제출
+
+1. `pms.py`가 설정과 인증 정보를 읽는다.
+2. `pms_browser.py`가 브라우저 컨텍스트를 만든다.
+3. 명령에 맞는 폼·수집·이슈 모듈이 페이지를 처리한다.
+4. 결과를 표준 출력, JSON 응답 또는 보고서 파일로 반환한다.
+5. 오류 유형을 PMS 종료 코드로 변환한다.
+
+## 저장 구조와 확장 위치
+
+```text
+skill/
+├─ prompts/ask.json          # 대화형 질문 정의
+├─ scripts/                  # Python 구현과 정적 페이지 자산
+├─ config.json               # 일반 설정
+├─ secrets.json              # 인증 정보; 버전 관리 대상 아님
+└─ messages.json             # 사용자 메시지
+```
+
+생성된 보고서는 날짜별 디렉터리에 저장한다. 경로 조합은 수집기와 뷰어가 임의로 만들지 않고 공통 설정에서 읽는다. 환경별 값은 설정 파일이나 사용자 환경에서 주입하며 비밀번호·API 키를 코드에 넣지 않는다.
+
+새 뷰어 API는 `viewer.py`에 라우트를 등록하고 실제 처리는 전용 `viewer_*.py`에 둔다. 새 PMS 화면은 `pms_browser.py`를 재사용하고 화면 규칙을 `pms_*.py`에 둔다. 새 PowerShell 출력이나 알림은 책임이 맞는 환경 모듈에 추가한다.
+
+구조 경계는 `tests/refactor_acceptance.py`, 일반 실행은 `tests/acceptance.py`에서 검증한다.
