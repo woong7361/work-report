@@ -561,6 +561,30 @@ def sample_body(text):
     return text.rsplit(SAMPLE_MARK, 1)[1].strip()
 
 
+def headings(text):
+    """문서의 절 제목만 뽑는다."""
+    return [m.group(2).strip() for m in re.finditer(r'(?m)^(#{1,3})\s+(.+)$', text or '')]
+
+
+def stale_sections(name, text):
+    """기본 양식에는 있는데 내 사본에는 없는 절.
+
+    토글을 켜면 그 사본은 그 시점에 멈춘다. 나중에 기본 양식에 절이 생겨도
+    따라오지 않고, 그 절이 필요하다는 사실조차 알 수 없다. 그래서 센다.
+    예시 더미 파일은 따라야 할 지침이 아니라 내 글을 담는 그릇이므로 뺀다.
+    """
+    if name == SAMPLE_FILE:
+        return []
+    template = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'templates', name)
+    try:
+        with open(os.path.normpath(template), encoding='utf-8') as fh:
+            base = fh.read()
+    except OSError:
+        return []
+    mine = set(headings(text))
+    return [h for h in headings(base) if h not in mine]
+
+
 def scan_custom(root, cfg):
     """어느 양식이 쓰이는지 기록해 둔다.
 
@@ -591,6 +615,7 @@ def scan_custom(root, cfg):
         out.append({'name': name, 'label': label, 'mine': True,
                     'used': text is not None, 'why': why,
                     'path': os.path.join('custom', name),
+                    'missing': stale_sections(name, text) if text else [],
                     'size': len(text.encode('utf-8')) if text else 0})
     return out
 
@@ -864,6 +889,11 @@ def render(data):
         if c['used']:
             L.append('%s: 내 것을 쓴다 — `%s` (%.1fKB)'
                      % (c['label'], c['path'], c['size'] / 1024.0))
+            if c.get('missing'):
+                L.append('  기본 양식에 있는 절이 내 파일에는 없다: %s'
+                         % ', '.join(c['missing']))
+                L.append('  업데이트로 생긴 절이다. 필요하면 기본 양식에서 옮겨 적어라'
+                         '(토글을 끄면 기본 양식을 쓴다).')
         else:
             L.append('%s: 내 것을 못 썼다 — %s. 기본값으로 쓴다' % (c['label'], c['why']))
     if data['auto_runs']:
