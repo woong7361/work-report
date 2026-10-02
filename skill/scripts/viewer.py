@@ -143,18 +143,15 @@ def make_handler(root, report_path, page, readme_path, page_assets=None):
         def _get(self):
             leaf, query = self._parts()
             asset_path_name = self.path.partition('?')[0]
-            if asset_path_name == '/page/app.js':
-                body = page_assets.get('app.js')
+            if asset_path_name.startswith('/page/'):
+                name = asset_path_name.rsplit('/', 1)[-1]
+                body = page_assets.get(name)
                 if body is None:
                     return self._send(404, b'no page asset')
+                ctype = ('text/css; charset=utf-8' if name.endswith('.css')
+                          else 'application/javascript; charset=utf-8')
                 return self._send(200, body.encode('utf-8'),
-                                   'application/javascript; charset=utf-8')
-            if asset_path_name == '/page/app.css':
-                body = page_assets.get('app.css')
-                if body is None:
-                    return self._send(404, b'no page asset')
-                return self._send(200, body.encode('utf-8'),
-                                   'text/css; charset=utf-8')
+                                   ctype)
             if leaf == 'files':
                 return self._json({'groups': list_reports(root),
                                    'custom': list_custom(root)})
@@ -283,7 +280,7 @@ def main():
                           cfg.get('submit_label') or '제출하러 가기',
                           bool(readme),
                           bool((cfg.get('pms') or {}).get('url')))
-        for name in ('app.js', 'app.css')
+        for name in ('app.js', 'app-ui.js', 'app-setup.js', 'app.css')
     }
 
     probe = socket.socket()

@@ -44,10 +44,31 @@ run-report.ps1          구간 결정, 잠금, 에이전트 호출, 알림, 결�
 
 | 파일 | 줄 | 하는 일 |
 |---|---|---|
-| `viewer.py` | 2681 | 로컬 HTTP 서버. 보고서 보기·고치기, 설정, 시작하기, 작업 띄우기 |
-| `collect.py` | 1104 | 대화 기록·git·파일 변경을 읽어 수집 결과를 만든다 |
-| `pms.py` | 903 | PMS 폼 채우기, 지난 보고서 수집, 열린 일감 받기, 제출문 검사 |
-| `_env.ps1` | 385 | 경로·설정·인터프리터·에이전트 홈 해석, 알림, 양식 파일 선택, 뷰어 종료 |
+| `viewer.py` | HTTP 서버와 조립 | 끝점과 페이지 조립. 파일·작업·설정·제출문 기능은 아래 모듈에서 가져온다 |
+| `viewer_files.py` | 보고서 파일·설정 | 보고서 목록, 경로 안전 검사, 사용자 양식, 설정 저장 |
+| `viewer_jobs.py` | 작업 수명주기 | 보고서·PMS 작업 시작과 상태 판정 |
+| `viewer_setup.py` | 시작하기 상태 | 보고서·PMS 준비 상태 집계 |
+| `submission.py` | 제출문 파싱 | 제출문 절을 폼 입력으로 바꾸는 규칙 |
+| `page/index.html`·`app*.js`·`app.css` | 정적 페이지 | 뷰어 화면의 HTML, JavaScript, CSS |
+| `collect.py` | 설정·조립·CLI | 수집기 설정과 기록원 결과를 하나로 묶는다 |
+| `sources_claude.py`·`sources_codex.py` | AI 기록원 | Claude Code와 Codex 세션 기록을 읽는다 |
+| `sources_git.py` | git 기록원 | 커밋과 미커밋 파일을 읽는다 |
+| `sources_files.py` | 파일 기록원 | PC에서 수정된 파일을 읽는다 |
+| `custom_files.py` | 사용자 양식 기록원 | 사용자 양식·문체·예시 파일을 판정한다 |
+| `render.py` | 수집 결과 출력 | 수집 결과를 Markdown으로 렌더링한다 |
+| `prompts.py` | 프롬프트 기록 공통 | 프롬프트 정리와 비밀값 가리기 |
+| `pms.py` | CLI와 작업 조립 | PMS 모드별 진입점과 폼 채우기 조립 |
+| `pms_config.py` | PMS 설정·종료 코드 | 설정 읽기와 `Stop` 계약 |
+| `pms_browser.py` | 브라우저 수명 | 크롬·CDP 연결, 창 상태, 로그인 판정 |
+| `pms_form.py` | PMS 폼 지식 | 선택자, 분류 표, 입력, 제출문 검사 |
+| `pms_harvest.py` | 지난 보고서 수집 | 통계와 문체 예시 파일 쓰기 |
+| `pms_issues.py` | 열린 일감 | API에서 연결 가능한 일감을 받는다 |
+| `_env.ps1` | 경로·설정·에이전트 홈 | 공통 환경 값과 하위 PowerShell 모듈 로딩 |
+| `_bins.ps1` | 실행 파일 탐색 | Python·Claude·Codex 탐색 |
+| `_toast.ps1` | 알림 | Windows 알림과 메시지 파일 읽기 |
+| `_formats.ps1` | 양식 파일 선택 | 보고서 양식·문체·예시 경로 선택 |
+| `_viewer.ps1` | 뷰어 프로세스 | 실행 중인 뷰어 종료 |
+| `_errors.ps1` | 오류 기록 | 한 달 보존 실행 오류 기록 |
 | `run-report.ps1` | 296 | 예약 실행의 본체. 에이전트를 부르고 결과를 판정한다 |
 | `register-appid.ps1` | 138 | 알림 신원과 시작 메뉴 등록 |
 | `secrets.py` | 100 | 비밀값을 DPAPI로 묶어 보관 |
