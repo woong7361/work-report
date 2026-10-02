@@ -168,6 +168,12 @@ def make_handler(root, report_path, page, readme_path, page_assets=None):
                     return self._send(404, b'no asset')
                 with io.open(target, 'rb') as fh:
                     return self._send(200, fh.read(), 'font/woff2')
+            if leaf == 'work-report.png':
+                target = asset_path(leaf)
+                if not target:
+                    return self._send(404, b'no asset')
+                with io.open(target, 'rb') as fh:
+                    return self._send(200, fh.read(), 'image/png')
             if leaf == 'favicon.ico':
                 if not ICON_PATH:
                     return self._send(404, b'no icon')

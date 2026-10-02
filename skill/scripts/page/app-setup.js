@@ -223,12 +223,24 @@ const THEME_ICON = {
 };
 const THEME_NAME = { system:'자동', light:'밝게', dark:'어둡게' };
 function applyTheme(t){
+  if (!THEME_NAME[t]) t = 'system';
   if (t === 'system') document.documentElement.removeAttribute('data-theme');
   else document.documentElement.setAttribute('data-theme', t);
   $('theme').innerHTML = THEME_ICON[t];
   $('theme').title = '화면 밝기: ' + THEME_NAME[t];
   $('theme').dataset.now = t;
   try { localStorage.setItem('wr-theme', t); } catch (e) {}
+}
+function toggleTheme(){
+  const now = $('theme').dataset.now || 'system';
+  if (now === 'system') {
+    // 시스템 모드에서 첫 클릭이 아무 변화도 만들지 않는 것처럼 보이지 않게
+    // 현재 실제 화면의 반대 밝기를 바로 선택한다.
+    const systemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    applyTheme(systemDark ? 'light' : 'dark');
+    return;
+  }
+  applyTheme(now === 'dark' ? 'light' : 'dark');
 }
 
 /* ============================================================ 왼쪽 레일 접기 */
@@ -248,9 +260,7 @@ function hideSide(){ $('side').classList.add('hide'); syncScrim(); }
 $('home').onclick = () => { mode = 'preview'; openReport(''); };
 $('toggleSide').onclick = () => { $('side').classList.toggle('hide'); syncScrim(); };
 $('theme').onclick = () => {
-  const order = ['system', 'light', 'dark'];
-  const now = $('theme').dataset.now || 'system';
-  applyTheme(order[(order.indexOf(now) + 1) % order.length]);
+  toggleTheme();
 };
 $('tabPreview').onclick = () => {
   if (editing) { $('editor').classList.add('showlive'); renderLive(); }
@@ -386,9 +396,16 @@ function drawSetup(){
   const box = el('div', 'setup');          // #view 의 class 는 그대로 둔다
   host.appendChild(box);
   const steps = setupSteps(setup || { reports:{}, custom:{}, pms:{} });
+  const total = steps.length;
+  const done = steps.filter(s => s.ok).length;
   const left = steps.filter(s => !s.ok && !s.optional).length;
-  box.appendChild(el('h1', 'setuphead',
-    left ? '아직 ' + left + '가지가 남았습니다' : '다 되어 있습니다'));
+  const requiredDone = steps.filter(s => !s.optional).every(s => s.ok);
+  const complete = requiredDone;
+  const head = el('h1', 'setuphead ' + (complete ? 'complete' : 'incomplete'),
+    left ? '아직 ' + left + '가지가 남았습니다' : '다 되어 있습니다');
+  head.appendChild(el('span', 'setup-progress ' + (complete ? 'complete' : 'incomplete'),
+    complete ? '✓ ' + done + '/' + total : done + '/' + total + ' 완료'));
+  box.appendChild(head);
   box.appendChild(el('div', 'setuplede',
     left ? '아래에서 바로 채울 수 있습니다' : '설정을 바꾸고 싶으면 아래에서 고칩니다'));
 
@@ -491,7 +508,12 @@ $('submit').onclick = async () => {
   const c = toCopy();
   try { await navigator.clipboard.writeText(c.body); } catch (e) {}
   flash(c.part ? '제출문을 복사했습니다. 붙여넣으세요' : '복사했습니다. 붙여넣으세요');
-  window.open(SUBMIT_URL, '_blank', 'noopener');
+  // 이름 있는 탭을 재사용한다. 연속으로 누르거나 보고서를 다시 열어도
+  // 제출 화면이 새 탭으로 계속 늘어나지 않는다.
+  const submitWindow = window.open(SUBMIT_URL, 'work-report-submit');
+  if (submitWindow) {
+    try { submitWindow.focus(); } catch (e) {}
+  }
 };
 
 $('view').addEventListener('dblclick', e => {

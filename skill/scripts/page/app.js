@@ -187,20 +187,15 @@ function buildIndex(groups){
 function nameOf(path){ return (path.split('/').pop() || '').replace(/\.md$/i, ''); }
 function siblingsOf(path){
   const area = areaOf(path), nm = nameOf(path);
-  // 주간 보고에는 같은 이름의 수집 원본이 없다. 주간은 원본 대화가 아니라 그
-  // 구간의 한 일 목록을 읽어서 쓰기 때문이다. 근거도 거기에 있다.
-  const span = nm.split('_');
-  if (area === 'weekly' && span.length === 2 && parseName(span[0]) && parseName(span[1])) {
-    const days = (INDEX.byArea.log || [])
-      .filter(it => it.name >= span[0] && it.name <= span[1])
-      .sort((a, b) => a.name < b.name ? -1 : 1)
-      .map(it => ({ area:'log', path:it.path, label: shortLabel(it.name) }));
-    return { lead:'이 구간의 한 일 목록', items: days };
-  }
-  const row = INDEX.byName[nm] || {}, out = [];
-  for (const a of ['daily', 'weekly', 'log', 'raw'])
-    if (a !== area && row[a]) out.push({ area:a, path:row[a], label: AREA_NAME[a] });
-  return { lead:'같은 날짜', items: out };
+  // 업무보고에서 근거를 찾는 동작은 문서 종류에 따라 흔들리면 안 된다.
+  // 주간 보고도 시작일을 기준으로 같은 세 종류의 문서를 보여 준다.
+  const date = nm.match(/^\d{4}-\d{2}-\d{2}/);
+  const row = date ? (INDEX.byName[date[0]] || {}) : {};
+  const fixed = ['daily', 'log', 'raw'];
+  return { lead:'같은 날짜', items: fixed.map(a => ({
+    area:a, path:row[a] || null, label:AREA_NAME[a],
+    selected:a === area || (area === 'weekly' && a === 'daily')
+  })) };
 }
 function neighborsOf(path){
   const list = INDEX.byArea[areaOf(path)] || [];
@@ -242,9 +237,14 @@ function drawRel(){
   if (!rel.items.length) { bar.hidden = true; return; }
   bar.appendChild(el('span', '', rel.lead));
   for (const s of rel.items) {
-    const a = el('a', s.area === 'log' ? 'num' : '', s.label);
-    a.href = '#';
-    a.onclick = e => { e.preventDefault(); openReport(s.path); };
+    const a = el('a', 'relitem' + (s.selected ? ' selected' : '') + (!s.path ? ' missing' : ''), s.label);
+    if (s.path) {
+      a.href = '#';
+      a.onclick = e => { e.preventDefault(); openReport(s.path); };
+    } else {
+      a.setAttribute('aria-disabled', 'true');
+      a.title = '아직 만들어지지 않았습니다';
+    }
     bar.appendChild(a);
   }
   bar.hidden = false;

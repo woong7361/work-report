@@ -68,7 +68,9 @@ def do_fill(pms, path):
         print('  앱 설정에서 "내 보고서 따라하기"를 켜고 pms.ps1 -Fetch 를 한 번 돌리면 생긴다.')
         return EXIT_NOTHING
 
-    ep, _started = ensure_browser(pms, url)
+    # 시작 명령에 URL을 넘기면 크롬이 탭을 하나 만든 뒤 Playwright가 같은
+    # 폼으로 다시 이동하면서 두 번째 탭이 생길 수 있다. 빈 탭을 재사용한다.
+    ep, _started = ensure_browser(pms)
     try:
         p, browser = connect(ep)
     except Stop as stop:
@@ -83,7 +85,7 @@ def do_fill(pms, path):
             raise need_login(pms)
         report = []
         fill_form(pg, data, report)
-        window_state(pg, 'minimized')     # 다 채웠으면 물러난다
+        window_state(pg, 'normal')        # 사람이 확인하고 저장할 수 있게 둔다
         n = len(data.get('items') or [])
         print('채웠다: 작업 항목 %d개, 일감 %d개' % (n, len(data.get('linked_issue_ids') or [])))
         if report:
@@ -140,7 +142,7 @@ def do_open(pms, date):
 
 def do_check(pms):
     url = form_url(pms, None)
-    ep, _ = ensure_browser(pms, url)
+    ep, _ = ensure_browser(pms)
     p, browser = connect(ep)
     try:
         pg = pick_page(browser, url)

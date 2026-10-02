@@ -17,6 +17,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / 'skill' / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 import collect
 import pms
+import pms_browser
 import pms_form
 import pms_harvest
 import pms_issues
@@ -63,7 +64,7 @@ class RefactorAcceptance(unittest.TestCase):
 
         with patch.object(viewer_jobs, 'bins_cache', {'python': 'fixture'}):
             for endpoint in ('/', '/files', '/jobs', '/config', '/bins', '/setup',
-                             '/readme', '/report', '/favicon.ico'):
+                             '/readme', '/report', '/favicon.ico', '/assets/work-report.png'):
                 with self.subTest(endpoint=endpoint):
                     self.assertEqual(request(endpoint)[0], 200)
             self.assertEqual(json.loads(request('/bins')[2]), {'python': 'fixture'})
@@ -131,6 +132,16 @@ class RefactorAcceptance(unittest.TestCase):
         pg.fill.assert_called_once_with('#daily_report_items_1_content', 'Fixture task')
         pg.click.assert_called_once_with('a#add-work-item')
         pg.check.assert_called_once_with('input[name="daily_report[linked_issue_ids][]"][value="12"]')
+
+    def test_pms_reuses_one_form_tab(self):
+        """Duplicate PMS form tabs are closed and the first tab is reused."""
+        chosen = Mock(url='https://pms.invalid/projects/fixture/daily_reports/new?date=2026-10-01')
+        duplicate = Mock(url='https://pms.invalid/projects/fixture/daily_reports/new?date=2026-10-01')
+        context = Mock(pages=[chosen, duplicate])
+        browser = Mock(contexts=[context])
+        page = pms_browser.pick_page(browser, 'https://pms.invalid/projects/fixture/daily_reports/new')
+        self.assertIs(page, chosen)
+        duplicate.close.assert_called_once_with()
 
     def test_job_exit_codes_and_dismissal(self):
         """Each PMS exit code becomes the same viewer action state; running jobs remain."""

@@ -50,13 +50,17 @@ function Show-Toast {
     # points straight at powershell.exe, and does not survive an encoded path.
     function ToUri([string]$p) { if ($p) { "workreport://$p" } else { '' } }
     function Esc([string]$s) { [System.Security.SecurityElement]::Escape($s) }
+    $imagePath = Join-Path (Split-Path $PSScriptRoot -Parent) 'assets\work-report.png'
+    $image = if (Test-Path $imagePath) {
+        '<image placement="appLogoOverride" src="{0}" />' -f (Esc ([Uri]::new($imagePath).AbsoluteUri))
+    } else { '' }
 
     try {
         [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
         [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime]
 
-        $body = '<toast activationType="protocol" launch="{0}"><visual><binding template="ToastText02"><text id="1">{1}</text><text id="2">{2}</text></binding></visual></toast>' -f `
-        (Esc (ToUri $OpenPath)), (Esc $Title), (Esc $Message)
+        $body = '<toast activationType="protocol" launch="{0}"><visual><binding template="ToastText02">{3}<text id="1">{1}</text><text id="2">{2}</text></binding></visual></toast>' -f `
+        (Esc (ToUri $OpenPath)), (Esc $Title), (Esc $Message), $image
 
         $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
         $xml.LoadXml($body)
@@ -85,7 +89,9 @@ function Show-Toast {
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
         Add-Type -AssemblyName System.Drawing -ErrorAction Stop
         $icon = New-Object System.Windows.Forms.NotifyIcon
-        $icon.Icon = if ($Kind -eq 'error') { [System.Drawing.SystemIcons]::Error }
+        $iconPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'assets\work-report.ico'
+        $icon.Icon = if (Test-Path $iconPath) { New-Object System.Drawing.Icon($iconPath) }
+        elseif ($Kind -eq 'error') { [System.Drawing.SystemIcons]::Error }
         else { [System.Drawing.SystemIcons]::Information }
         $icon.Visible = $true
         $icon.ShowBalloonTip(5000, $Title, $Message, $(if ($Kind -eq 'error') { 'Error' } else { 'Info' }))

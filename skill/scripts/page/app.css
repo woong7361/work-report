@@ -196,6 +196,10 @@ textarea.lines { max-width:430px; min-height:78px; resize:vertical;
 .navitem:hover { background:var(--soft); color:var(--text); border-color:transparent; }
 .navitem.on { background:var(--accent-soft); color:var(--text); font-weight:var(--fw-bold);
               box-shadow:inset 2px 0 0 var(--accent); }
+.navitem#tabSetup svg { color:#2d8a68; }
+.navitem#tabReadme svg { color:#3778c8; }
+.navitem#tabConfig svg { color:#b4772e; }
+.navitem.on svg { filter:saturate(1.15); }
 
 /* 지금 고른 것은 채운 색이 아니라 왼쪽 선으로 말한다. 목록이 길어도 파란
    알약이 줄줄이 켜지지 않고 글자가 그대로 읽힌다 */
@@ -240,6 +244,12 @@ textarea.lines { max-width:430px; min-height:78px; resize:vertical;
 .setup { max-width:620px; margin:0 auto; padding:var(--sp-5) var(--sp-4) var(--sp-6); }
 .setuphead { font-size:var(--fs-600); font-weight:var(--fw-bold); margin:0 0 var(--sp-1);
              letter-spacing:-.02em; }
+.setuphead.incomplete { color:var(--bad); }
+.setuphead.complete { color:var(--ok); }
+.setup-progress { display:inline-flex; align-items:center; gap:var(--sp-2); margin-left:var(--sp-2);
+                  font-size:var(--fs-300); font-weight:var(--fw-bold); letter-spacing:0; }
+.setup-progress.incomplete { color:var(--bad); }
+.setup-progress.complete { color:var(--ok); }
 .setuplede { color:var(--muted); font-size:var(--fs-200); margin-bottom:var(--sp-5); }
 .sfield { display:grid; gap:4px; margin:var(--sp-2) 0; max-width:420px; }
 .sfield label { font-size:var(--fs-100); color:var(--faint); }
@@ -331,12 +341,15 @@ nav.side.hide { display:none; }
 /* 같은 날짜의 다른 문서로 건너가는 줄. 요약에서 빠진 근거를 되찾는 길이라
    문서 바로 위에 둔다 */
 .rel { flex:0 0 auto; display:flex; align-items:center; gap:var(--sp-2);
-       padding:5px var(--sp-5); background:var(--bg);
+       padding:7px var(--sp-5); background:var(--bg);
        border-bottom:1px solid var(--line); font-size:var(--fs-100); color:var(--faint); }
 .rel a { display:inline-flex; align-items:center; gap:5px; color:var(--muted);
-         text-decoration:none; padding:1px var(--sp-2); border-radius:var(--r-sm);
-         border:1px solid var(--line); background:var(--panel); }
-.rel a:hover { color:var(--text); border-color:var(--scroll); }
+         text-decoration:none; padding:4px 10px; border-radius:var(--r-pill);
+         border:1px solid var(--line); background:var(--panel); transition:all .1s; }
+.rel a:hover { color:var(--text); border-color:var(--accent-line); background:var(--accent-soft); }
+.rel a.selected { color:var(--text); border-color:var(--accent); background:var(--accent-soft);
+                  box-shadow:inset 0 0 0 1px var(--accent); font-weight:var(--fw-bold); }
+.rel a.missing { color:var(--faint); border-style:dashed; cursor:default; }
 
 /* 스크롤은 여기 한 곳에서만 일어난다 */
 .sheet { flex:1 1 auto; overflow-y:auto; }

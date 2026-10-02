@@ -118,12 +118,27 @@ def connect(ep):
 def pick_page(browser, want):
     """같은 주소의 탭이 있으면 재사용한다. 창이 늘어나지 않게."""
     ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-    for pg in ctx.pages:
-        if want.split('?')[0] in (pg.url or ''):
-            return pg
-    for pg in ctx.pages:                      # 빈 탭이 있으면 그걸 쓴다
-        if (pg.url or '').startswith(('about:', 'chrome://newtab')):
-            return pg
+    exact = [pg for pg in ctx.pages if want.split('?')[0] in (pg.url or '')]
+    if exact:
+        chosen = exact[0]
+        # 전용 프로파일에 남은 같은 폼 탭은 하나만 유지한다. 중복 탭이
+        # 쌓이면 채운 결과를 어느 탭에서 저장해야 하는지 알 수 없어진다.
+        for pg in exact[1:]:
+            try:
+                pg.close()
+            except Exception:
+                pass
+        return chosen
+    blank = [pg for pg in ctx.pages
+             if (pg.url or '').startswith(('about:', 'chrome://newtab'))]
+    if blank:                                  # 빈 탭이 있으면 그걸 쓴다
+        chosen = blank[0]
+        for pg in blank[1:]:
+            try:
+                pg.close()
+            except Exception:
+                pass
+        return chosen
     return ctx.new_page()
 
 
@@ -167,12 +182,11 @@ def open_form(pms, url):
 
 def do_login(pms):
     base = pms['url'].rstrip('/')
-    ep, started = ensure_browser(pms, base + '/login')
+    ep, _started = ensure_browser(pms)
     p, browser = connect(ep)
     try:
         pg = pick_page(browser, base)
-        if not started:
-            pg.goto(base + '/login', wait_until='domcontentloaded')
+        pg.goto(base + '/login', wait_until='domcontentloaded')
         print('열린 창에서 로그인해라. "로그인 유지"를 켜면 다음부터 묻지 않는다.')
         print('(이 창은 work-report 전용이다. 평소 쓰는 크롬과 섞이지 않는다)')
         for _ in range(240):                  # 최대 20분 기다린다
