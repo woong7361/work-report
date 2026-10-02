@@ -12,6 +12,7 @@ import http.server
 import io
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -20,6 +21,7 @@ import time
 import webbrowser
 from urllib.parse import quote, unquote
 
+import secrets as secret_store
 from _log import log_error
 
 IDLE_TIMEOUT = 2 * 60 * 60  # 이 시간 동안 아무 요청이 없으면 스스로 종료한다
@@ -319,6 +321,197 @@ def start_job(root, mode):
     return job_id
 
 
+# PMS 폼 채우기. 보고서의 제출문 절을 읽어 폼의 작업 항목으로 바꾼다.
+#
+# 제출문을 원본으로 삼는 이유: 사람이 읽고 고치는 글이 하나여야 한다. 에이전트가
+# 기계용 파일을 따로 쓰게 하면 그 둘이 어긋나고, 어느 쪽이 올라갔는지 알 수 없다.
+# 모양은 양식 파일의 "제출문 절 쓰는 법"이 정한다.
+RE_CATEGORY = re.compile(r'^\(([^)]{1,20})\)$')
+RE_ISSUES = re.compile(r'^연결된\s*일감\s*[:：]\s*(.+)$')
+
+
+def submission_block(text):
+    """보고서에서 제출문 절의 줄만 떼어 낸다."""
+    lines = (text or '').split(chr(10))
+    start = -1
+    for i, line in enumerate(lines):
+        if line.startswith('## ') and '제출문' in line:
+            start = i + 1
+            break
+    if start < 0:
+        return []
+    for i in range(start, len(lines)):
+        if lines[i].startswith('## '):
+            return lines[start:i]
+    return lines[start:]
+
+
+def parse_submission(text):
+    """제출문 절을 폼에 넣을 모양으로.
+
+    "(개발)" 같은 분류 줄이 덩어리를 가르고 그 아래가 본문이다. 분류 줄이
+    없으면 전체를 분류 없는 한 덩어리로 둔다 - 분류를 지어내지 않고,
+    채우는 쪽이 "폼 기본값이 남았다"고 알려 준다.
+    """
+    items, issues, cur = [], [], None
+    for raw in submission_block(text):
+        line = raw.strip()
+        # 양식이 모양을 코드 블록으로 보여 주다 보니 제출문도 ``` 로 감싸 쓰는
+        # 경우가 있다. 울타리는 글이 아니므로 폼에 넣지 않는다.
+        if line.startswith('```') or line.startswith('~~~'):
+            continue
+        m = RE_CATEGORY.match(line)
+        if m:
+            cur = {'category': m.group(1).strip(), 'content': []}
+            items.append(cur)
+            continue
+        m = RE_ISSUES.match(line)
+        if m:
+            issues += re.findall(r'(\d{1,7})', m.group(1))
+            continue
+        if line:
+            if cur is None:
+                cur = {'category': '', 'content': []}
+                items.append(cur)
+            cur['content'].append(raw.rstrip())
+        elif cur is not None:
+            cur['content'].append('')
+    out = []
+    for it in items:
+        body = chr(10).join(it['content']).strip()
+        if body:
+            out.append({'category': it['category'], 'content': body})
+    return {'items': out, 'linked_issue_ids': [int(x) for x in dict.fromkeys(issues)]}
+
+
+def report_date(rel):
+    m = re.search(r'(\d{4}-\d{2}-\d{2})', rel or '')
+    return m.group(1) if m else time.strftime('%Y-%m-%d')
+
+
+# pms.ps1 의 종료 코드를 화면 상태로. 사람이 다음에 할 일이 코드마다 다르다.
+PMS_STATE = {0: 'done', 10: 'opened', 2: 'login', 3: 'config', 4: 'playwright', 5: 'env'}
+
+
+def start_pms(root, rel, mode='fill'):
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pms.ps1')
+    logdir = os.path.join(root, 'runlog', time.strftime('%Y-%m'))
+    if not os.path.isdir(logdir):
+        os.makedirs(logdir)
+    log = os.path.join(logdir, 'pms.log')
+    argv = ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script]
+    rows = None
+    if mode == 'login':
+        argv.append('-Login')
+    elif mode == 'fetch':
+        argv.append('-Fetch')
+    else:
+        target = safe_join(root, rel) if rel else None
+        if not target:
+            return None, '보고서를 찾지 못했습니다'
+        with io.open(target, encoding='utf-8') as fh:
+            parsed = parse_submission(fh.read())
+        parsed['date'] = report_date(rel)
+        folder = os.path.join(root, 'pms', 'rows')
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+        rows = os.path.join(folder, parsed['date'] + '.json')
+        with io.open(rows, 'w', encoding='utf-8', newline='') as fh:
+            fh.write(json.dumps(parsed, ensure_ascii=False, indent=1))
+        argv += ['-Fill', rows]
+    started = time.time()
+    fh = open(log, 'ab')
+    head = '[%s] %s %s' % (time.strftime('%H:%M:%S'), mode, rel or '')
+    fh.write(head.encode('utf-8') + os.linesep.encode('ascii'))
+    proc = subprocess.Popen(argv, cwd=root, stdout=fh, stderr=subprocess.STDOUT,
+                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    job_id = 'pms-%s-%d' % (mode, int(started * 1000))
+    with jobs_lock:
+        jobs[job_id] = {'id': job_id, 'mode': 'pms' if mode == 'fill' else 'pms-' + mode,
+                        'started': started, 'proc': proc, 'state': 'running',
+                        'path': None, 'paths': [], 'log': log, 'note': []}
+    return job_id, None
+
+
+def pms_note(log):
+    """스크립트가 마지막에 한 말. 카드에 그대로 보여 준다 - 안내가 로그에만
+    남으면 사람은 보지 않는다."""
+    try:
+        with io.open(log, encoding='utf-8', errors='replace') as fh:
+            lines = [l.rstrip() for l in fh if l.strip()]
+    except OSError:
+        return []
+    out = []
+    for line in reversed(lines):
+        if line.startswith('['):
+            break
+        out.append(line)
+    return list(reversed(out))[-6:]
+
+
+def setup_status(root):
+    """지금 무엇이 되어 있고 무엇이 비었는지.
+
+    차례대로 넘기는 마법사 대신 상태를 보여 준다. 사람마다 도착 지점이 다르고,
+    이미 해 둔 것을 다시 묻는 화면은 길잡이가 아니라 방해다. 여기서는 사실만
+    모으고, 무엇을 권할지는 화면이 정한다.
+    """
+    cfg = read_config(root)
+    pms = cfg.get('pms') or {}
+    counts = {}
+    for area, _label in AREAS:
+        base = os.path.join(root, area)
+        n = 0
+        for _dirpath, _dirs, names in os.walk(base):
+            n += len([x for x in names if x.endswith('.md')])
+        counts[area] = n
+
+    # 가장 최근 일일보고와 거기 제출문이 있는지. "제출할 것이 있나"의 답이다.
+    latest, has_submission = None, False
+    daily = os.path.join(root, 'daily')
+    found = []
+    for dirpath, _dirs, names in os.walk(daily):
+        found += [os.path.join(dirpath, n) for n in names if n.endswith('.md')]
+    if found:
+        newest = max(found, key=os.path.getmtime)
+        latest = os.path.relpath(newest, root).replace(os.sep, '/')
+        try:
+            with io.open(newest, encoding='utf-8') as fh:
+                has_submission = bool(parse_submission(fh.read())['items'])
+        except OSError:
+            pass
+
+    # 로그인했는지는 띄워 보지 않으면 모른다. 쿠키가 남아 있는지로 "한 적 있다"까지만.
+    profile = pms.get('profile') or os.path.join(root, 'browser')
+    signed_in = os.path.isfile(os.path.join(profile, 'Default', 'Network', 'Cookies'))
+
+    fetched = os.path.join(root, 'pms', 'my-daily-reports.json')
+    harvest = {'count': 0, 'latest': None}
+    try:
+        with io.open(fetched, encoding='utf-8-sig') as fh:
+            got = json.load(fh).get('reports') or []
+        harvest = {'count': len(got), 'latest': got[0]['date'] if got else None}
+    except (OSError, ValueError, KeyError, IndexError):
+        pass
+
+    try:
+        import importlib.util
+        playwright = importlib.util.find_spec('playwright') is not None
+    except Exception:
+        playwright = False
+
+    issues = os.path.join(root, 'pms', 'open-issues.md')
+    return {'reports': counts, 'latest_daily': latest, 'has_submission': has_submission,
+            'custom': {name: bool(cfg.get(flag)) for name, _l, flag in CUSTOM},
+            'seen': [x for x in (cfg.get('setup_seen') or []) if x in SEEN_KEYS],
+            'author': cfg.get('author') or '',
+            # 토큰은 있는지만 알린다. 값은 화면으로 돌려보내지 않는다.
+            'pms': {'url': pms.get('url') or '', 'project': pms.get('project') or '',
+                    'has_token': secret_store.has(root, 'pms_token'),
+                    'issues_at': os.path.isfile(issues),
+                    'signed_in': signed_in, 'playwright': playwright, 'harvest': harvest}}
+
+
 def drop_job(job_id):
     """닫은 작업을 목록에서 뺀다.
 
@@ -340,8 +533,15 @@ def job_status(root):
         for job in jobs.values():
             if job['state'] == 'running':
                 code = job['proc'].poll()
+                pms = job['mode'].startswith('pms')
                 if code is None:
-                    mine_running = True
+                    # PMS 채우기는 보고서를 쓰는 실행이 아니다. 예약 실행 줄을
+                    # 가리는 판단에 끼어들지 않게 여기서는 세지 않는다.
+                    if not pms:
+                        mine_running = True
+                elif pms:
+                    job['state'] = PMS_STATE.get(code, 'failed')
+                    job['note'] = pms_note(job.get('log'))
                 else:
                     made = made_since(root, job['mode'], job['started'])
                     # 2는 러너가 "다른 실행이 도는 중이라 물러났다"고 말하는 값이다.
@@ -354,7 +554,8 @@ def job_status(root):
                     job['path'] = made[0] if made else None
             row = {'id': job['id'], 'mode': job['mode'], 'state': job['state'],
                    'seconds': int(time.time() - job['started']),
-                   'path': job['path'], 'paths': job.get('paths') or []}
+                   'path': job['path'], 'paths': job.get('paths') or [],
+                   'note': job.get('note') or []}
             if job['state'] == 'running':
                 row['phase'] = job_phase(root, job['started'])
             out.append(row)
@@ -368,6 +569,10 @@ def job_status(root):
 
 # 화면에서 고칠 수 있는 항목만 받는다. 설치가 채우는 기계 정보
 # (*_homes, *_dirs, skill_dirs)는 손으로 고치면 깨지므로 받지 않는다.
+# 설정을 한 번 열어 봤는지. "내 양식"은 켜지 않는 것도 답이라서, 토글로는
+# 끝났는지 알 수 없다. 본 적이 있으면 그 단계는 끝난 것으로 둔다.
+SEEN_KEYS = ('custom',)
+
 EDITABLE = {
     'author': str, 'agent': str, 'notify': bool, 'submit_url': str, 'submit_label': str,
     'mine_only': bool, 'redact': bool, 'backfill_days': int, 'retain_months': int,
@@ -377,6 +582,12 @@ EDITABLE = {
     'max_prompt_chars': int, 'max_prompts_per_session': int,
 }
 WEEKLY_KEYS = {'end_day': str, 'span_days': int}
+# PMS 일일보고 폼을 채우는 기능의 설정. 비어 있으면 그 기능만 꺼진 것처럼 동작한다.
+# projects 는 지난 보고서를 받아올 프로젝트들이고, 비우면 project 하나만 본다.
+# token 은 여기 없다. 금고(secrets.py)로 따로 간다 - config.json 은 에이전트가
+# 읽는 폴더에 있고, 비밀값이 거기 있으면 읽힌다.
+PMS_KEYS = {'url': str, 'project': str, 'projects': list, 'port': int,
+            'profile': str, 'chrome_bin': str}
 
 
 def read_config(root):
@@ -410,16 +621,30 @@ def write_config(root, incoming):
         if cfg.get(flag):
             seed_custom(root, name)
 
-    weekly = incoming.get('weekly') or {}
-    if weekly:
-        cur = dict(cfg.get('weekly') or {})
-        for key, kind in WEEKLY_KEYS.items():
-            if key in weekly:
-                try:
-                    cur[key] = int(weekly[key]) if kind is int else str(weekly[key])
-                except (TypeError, ValueError):
-                    pass
-        cfg['weekly'] = cur
+    # 비밀값은 설정 파일이 아니라 금고로. 빈 값은 "그대로 둬라"는 뜻이라 무시한다.
+    token = ((incoming.get('pms') or {}).get('token') or '').strip()
+    if token:
+        secret_store.put(root, 'pms_token', token)
+
+    for group, allowed in (('weekly', WEEKLY_KEYS), ('pms', PMS_KEYS)):
+        incoming_group = incoming.get(group) or {}
+        if not incoming_group:
+            continue
+        cur = dict(cfg.get(group) or {})
+        for key, kind in allowed.items():
+            if key not in incoming_group:
+                continue
+            value = incoming_group[key]
+            try:
+                if kind is int:
+                    cur[key] = int(value or 0)
+                elif kind is list:
+                    cur[key] = [str(v).strip() for v in value if str(v).strip()]
+                else:
+                    cur[key] = str(value)
+            except (TypeError, ValueError):
+                pass
+        cfg[group] = cur
     path = os.path.join(root, 'config.json')
     with io.open(path, 'w', encoding='utf-8', newline='') as fh:
         fh.write(json.dumps(cfg, ensure_ascii=False, indent=2) + os.linesep)
@@ -431,11 +656,12 @@ def html_escape(s):
             .replace('>', '&gt;').replace('"', '&quot;'))
 
 
-def build_page(title, submit_url, submit_label, has_readme):
+def build_page(title, submit_url, submit_label, has_readme, pms_on=False):
     return (PAGE.replace('{{TITLE}}', html_escape(title))
             .replace('{{SUBMIT_URL}}', html_escape(submit_url or ''))
             .replace('{{SUBMIT_LABEL}}', html_escape(submit_label or '제출하러 가기'))
-            .replace('{{HAS_README}}', 'true' if has_readme else 'false'))
+            .replace('{{HAS_README}}', 'true' if has_readme else 'false')
+            .replace('{{PMS_ON}}', 'true' if pms_on else 'false'))
 
 
 PAGE = r"""<!doctype html>
@@ -680,6 +906,30 @@ textarea.lines { max-width:430px; min-height:78px; resize:vertical;
 .job .note { margin-top:var(--sp-2); color:var(--muted); font-size:var(--fs-100); }
 .job .note a { display:block; color:var(--accent); text-decoration:none; padding:1px 0; }
 .job .note a:hover { text-decoration:underline; }
+.job.skipped .dot { background:var(--faint); }
+
+/* -- 시작하기: 무엇이 되어 있는지 보여 주는 상태판 ------------------ */
+.setup { max-width:620px; margin:0 auto; padding:var(--sp-5) var(--sp-4) var(--sp-6); }
+.setuphead { font-size:var(--fs-600); font-weight:var(--fw-bold); margin:0 0 var(--sp-1);
+             letter-spacing:-.02em; }
+.setuplede { color:var(--muted); font-size:var(--fs-200); margin-bottom:var(--sp-5); }
+.sfield { display:grid; gap:4px; margin:var(--sp-2) 0; max-width:420px; }
+.sfield label { font-size:var(--fs-100); color:var(--faint); }
+.sfield input { width:100%; padding:7px 9px; border:1px solid var(--line);
+                border-radius:var(--r-md); background:var(--panel); color:var(--text);
+                font:inherit; font-size:var(--fs-200); }
+.sfield input:focus { outline:none; border-color:var(--accent); }
+.sfield.filled input::placeholder { color:var(--ok); }
+.sfield.filled label { color:var(--ok); }
+.sfield .shint { font-size:var(--fs-100); color:var(--faint); }
+.step { display:grid; grid-template-columns:20px 1fr; gap:var(--sp-3);
+        padding:var(--sp-3) 0; border-top:1px solid var(--line); }
+.step .mark { color:var(--faint); line-height:1.5; }
+.step.ok .mark { color:var(--ok); }
+.step .t { font-weight:var(--fw-bold); margin-bottom:2px; }
+.step .d { color:var(--muted); font-size:var(--fs-200); line-height:1.55; }
+.step.wait .t, .step.wait .d { color:var(--faint); }
+.step button { margin-top:var(--sp-2); }
 
 /* ============================================================== 뼈대
    화면은 세 층이다. 위 막대는 "만드는 일", 왼쪽 레일은 "어디로 갈지",
@@ -907,6 +1157,10 @@ pre.raw { margin:0; padding:0; border:0; background:transparent;
       </div>
       <div class="navscroll" id="files"></div>
       <div class="navfoot">
+        <button class="navitem" id="tabSetup">
+          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5l4 4 8-9"/></svg>
+          시작하기
+        </button>
         <button class="navitem" id="tabReadme">
           <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="7.2"/><path d="M10 9v5" stroke-linecap="round"/><circle cx="10" cy="6.4" r=".9" fill="currentColor" stroke="none"/></svg>
           사용 설명
@@ -944,6 +1198,7 @@ pre.raw { margin:0; padding:0; border:0; background:transparent;
           <button id="save" class="solid" hidden>저장</button>
           <button id="confSave" class="solid" hidden>설정 저장</button>
           <button id="copy" class="quiet" hidden>복사</button>
+          <button id="pmsFill" class="solid" hidden>PMS에 채우기</button>
           <button id="submit" class="solid" hidden>{{SUBMIT_LABEL}}</button>
         </div>
       </div>
@@ -975,6 +1230,10 @@ const SUBMIT_URL = "{{SUBMIT_URL}}";
 const HAS_README = {{HAS_README}};
 // 알림을 눌러 들어오면 어떤 보고서를 열지 주소가 말해 준다
 const START = new URLSearchParams(location.search).get('path') || '';
+const NL = String.fromCharCode(10);     // 안내문 줄바꿈
+// PMS 주소가 설정돼 있는지. 설정 화면을 아직 열지 않았으면 conf 는 비어 있으므로
+// 띄울 때의 값을 박아 둔다. 설정을 저장하면 conf 가 채워져 그때부터는 그쪽이 맞다.
+const PMS_ON = {{PMS_ON}};
 const AREA_NAME = { daily:'일일 보고', weekly:'주간 보고', log:'한 일 목록', raw:'수집 원본' };
 const AREA_TAG  = { daily:'일일', weekly:'주간', log:'한 일', raw:'원본' };
 const CUSTOM_NAME = { 'report-format.md':'보고서 양식', 'writing-rules.md':'글쓰기 문체',
@@ -986,7 +1245,8 @@ const FOLDED = ['log', 'raw'];
 const WD = ['일','월','화','수','목','금','토'];
 
 let raw = '', orig = '', current = '', dirty = false;
-let view = 'doc';            // doc | config | readme
+let view = 'doc';            // doc | config | readme | setup
+let setup = null;            // 무엇이 되어 있는지 (서버가 센 값)
 let mode = 'preview';        // 문서를 읽는 방식: preview | raw
 let editing = false, cellEditing = null;
 let readme = null, conf = null, confDirty = false;
@@ -1218,10 +1478,11 @@ function drawRel(){
   bar.hidden = false;
 }
 function layout(){
-  const isDoc = view === 'doc', isReadme = view === 'readme';
+  const isDoc = view === 'doc', isReadme = view === 'readme', isSetup = view === 'setup';
   const area = areaOf(current);
   const writable = isDoc && !!current && /\.md$/i.test(current) && area !== 'raw';
-  const showPaper = (isDoc || isReadme) && !editing;
+  // 시작하기도 읽는 화면이라 같은 종이 위에 올린다
+  const showPaper = (isDoc || isReadme || isSetup) && !editing;
   const live = $('editor').classList.contains('showlive');
 
   $('paper').hidden = !showPaper;
@@ -1246,6 +1507,9 @@ function layout(){
   $('submit').hidden = !(SUBMIT_URL && isDoc && !editing && (area === 'daily' || area === 'weekly'));
   $('copy').hidden = !(isDoc && !editing && !!current);
   if (isDoc && current) $('copy').textContent = toCopy().part ? '제출문 복사' : '복사';
+  // 일일보고일 때만. PMS 일일보고는 하루 한 건이고 주간 보고에는 대응하는 칸이 없다
+  const pmsReady = conf && conf.pms ? !!conf.pms.url : PMS_ON;
+  $('pmsFill').hidden = !(isDoc && !editing && area === 'daily' && pmsReady);
 
   const nb = (isDoc && current) ? neighborsOf(current) : { prev:null, next:null };
   $('flip').hidden = !(isDoc && !editing && (nb.prev || nb.next));
@@ -1256,11 +1520,13 @@ function layout(){
 
   $('tabConfig').classList.toggle('on', view === 'config');
   $('tabReadme').classList.toggle('on', view === 'readme');
+  $('tabSetup').classList.toggle('on', view === 'setup');
   markCurrent();
   drawRel();
 }
 function paint(){
-  if (view === 'readme') { setHead('사용 설명', 'GUIDE.md'); $('view').innerHTML = render(readme || '', false); }
+  if (view === 'setup') { setHead('시작하기', '지금 무엇이 되어 있는지'); drawSetup(); }
+  else if (view === 'readme') { setHead('사용 설명', 'GUIDE.md'); $('view').innerHTML = render(readme || '', false); }
   else if (view === 'config') { setHead('설정', 'config.json'); }
   else {
     setHead(titleOf(current), current + (areaOf(current) === 'raw' ? '   읽기 전용' : ''));
@@ -1513,7 +1779,71 @@ function cancelCell(){
 }
 
 /* ============================================================ 만들기 */
+// PMS 작업은 결말이 여섯 가지다. 무엇을 해야 하는지가 상태마다 달라서
+// "실패" 한 마디로는 사람이 다음 행동을 알 수 없다.
+const PMS_TAIL = { running:' - 폼을 채우는 중', done:' 채웠습니다', opened:' - 폼만 열었습니다',
+                   login:' - 로그인이 필요합니다', config:' - 설정이 비었습니다',
+                   playwright:' - 준비물이 없습니다', env:' - 브라우저를 열 수 없습니다',
+                   failed:' 실패' };
+
+function pmsCard(j){
+  const label = j.mode === 'pms-login' ? 'PMS 로그인' : 'PMS 폼 채우기';
+  let box = $('job-' + j.id);
+  if (!box) { box = el('div'); box.id = 'job-' + j.id; $('jobs').appendChild(box); }
+  box.className = 'job ' + (j.state === 'running' ? 'running' : j.state === 'done' ? 'done'
+                          : j.state === 'opened' ? 'skipped' : 'failed');
+  box.textContent = '';
+
+  const row = el('div', 'row');
+  if (j.state !== 'running') row.appendChild(el('span', 'dot'));
+  row.appendChild(el('span', 'what', label + (PMS_TAIL[j.state] || ' 실패')));
+  row.appendChild(el('span', 'time', j.seconds + '초'));
+  if (j.state !== 'running') {
+    const x = el('button', 'x');
+    x.title = '닫기';
+    x.innerHTML = '<svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 5l10 10M15 5L5 15"/></svg>';
+    x.onclick = async () => {
+      box.remove();
+      try { await fetch(api('dismiss', { id: j.id }), { method:'POST' }); } catch (e) {}
+    };
+    row.appendChild(x);
+  }
+  box.appendChild(row);
+
+  if (j.state === 'running') {
+    const bar = el('div', 'bar');
+    bar.appendChild(el('i'));
+    box.appendChild(bar);
+    return;
+  }
+  // 스크립트가 한 말을 그대로 보여 준다. 안내가 로그에만 남으면 아무도 읽지 않는다
+  const note = el('div', 'note');
+  for (const line of (j.note || [])) note.appendChild(el('div', '', line));
+  if (!(j.note || []).length) note.appendChild(document.createTextNode('runlog의 pms.log에 기록이 남습니다'));
+  box.appendChild(note);
+
+  // 바로 고칠 수 있는 것은 단추로 둔다
+  if (j.state === 'done' && j.mode === 'pms') {
+    // 창은 뒤에서 열린다. 하던 일을 끊지 않으려고 그렇게 했으니, 볼 길을 준다
+    const b = el('button', 'quiet', 'PMS 창 보기');
+    b.onclick = () => pmsRun('show');
+    box.appendChild(b);
+  } else if (j.state === 'login') {
+    const b = el('button', 'quiet', '로그인 창 열기');
+    b.onclick = async () => {
+      await fetch(api('pms', { mode:'login' }), { method:'POST' });
+      if (!polling) { polling = true; pollJobs(); }
+    };
+    box.appendChild(b);
+  } else if (j.state === 'config') {
+    const b = el('button', 'quiet', '설정 열기');
+    b.onclick = () => show('config');
+    box.appendChild(b);
+  }
+}
+
 function jobCard(j){
+  if (j.mode === 'pms' || j.mode === 'pms-login') return pmsCard(j);
   const label = (j.mode === 'daily' ? '일일보고' : '주간보고') + (j.external ? ' (예약 실행)' : '');
   let box = $('job-' + j.id);
   if (!box) { box = el('div'); box.id = 'job-' + j.id; $('jobs').appendChild(box); }
@@ -1621,6 +1951,13 @@ const FIELDS = [
          '\nex. node_modules' +
          '\nex. \\build\\  (구분자는 \\ 로 적는다)' },
 
+  { h:'PMS 일일보고' },
+  { k:'pms.url',      t:'str',  label:'PMS 주소',
+    hint:'예: https://pms.example.com' + NL + '비우면 이 기능은 꺼진다' },
+  { k:'pms.project',  t:'str',  label:'올릴 프로젝트',
+    hint:'PMS 주소의 /projects/<여기> 부분' },
+  { k:'pms.projects', t:'lines', label:'지난 보고서를 받을 프로젝트',
+    hint:'한 줄에 하나. 비우면 위의 프로젝트만 본다' + NL + '프로젝트를 옮긴 적이 있으면 예전 것도 적는다' },
   { h:'실행' },
   { k:'backfill_days',    t:'num', label:'빠뜨린 날 채우기', hint:'며칠 전까지. 0이면 안 함' },
   { k:'retain_months',    t:'num', label:'수집본 보관(개월)',
@@ -1752,7 +2089,11 @@ function drawConfig(){
       else if (t === 'num') v = input.value === '' ? 0 : Number(input.value);
       else if (t === 'lines') v = input.value.split(/\r?\n/);
       else v = input.value;
-      if (k.indexOf('weekly.') === 0) out.weekly[k.slice(7)] = v; else out[k] = v;
+      // 점이 있는 키는 그 앞을 묶음 이름으로 본다. weekly 만 특별히 다루면
+      // 묶음을 더할 때마다 이 줄을 또 고쳐야 한다.
+      const dot = k.indexOf('.');
+      if (dot > 0) { const g = k.slice(0, dot); (out[g] = out[g] || {})[k.slice(dot + 1)] = v; }
+      else out[k] = v;
     });
     const r = await fetch(api('config'), { method:'POST',
       headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(out) });
@@ -1840,6 +2181,158 @@ $('tabReadme').onclick = async () => {
   paint();
   $('sheet').scrollTop = 0;
 };
+// 차례대로 넘기는 마법사가 아니라 상태판이다. 사람마다 도착 지점이 다르고,
+// 이미 해 둔 것을 다시 묻는 화면은 길잡이가 아니라 방해다.
+// 각 줄은 "무엇이 되는가 / 지금 어떤가 / 지금 할 수 있는 것" 셋으로만 쓴다.
+function setupSteps(st){
+  const p = st.pms || {}, h = p.harvest || {};
+  const reports = (st.reports || {}).daily || 0;
+  const seen = st.seen || [];
+  return [
+    { ok: reports > 0,
+      title: '보고서 만들기',
+      done: '일일보고 ' + reports + '건이 쌓여 있습니다',
+      todo: '아직 보고서가 없습니다. 평일 저녁에 저절로 만들어지고, 지금 만들 수도 있습니다',
+      act: reports > 0 ? null : { label:'지금 만들어 보기', run:() => run('daily') } },
+
+    { ok: !!st.custom['report-format.md'] || !!st.custom['writing-rules.md'] || seen.indexOf('custom') >= 0,
+      title: '내 양식과 문체',
+      done: (st.custom['report-format.md'] || st.custom['writing-rules.md'])
+            ? '내 것을 쓰고 있습니다 (왼쪽 아래 "내 양식"에서 고칩니다)'
+            : '기본값을 쓰고 있습니다. 회사 양식이 다르거나 말투를 바꾸려면 설정에서 켭니다',
+      todo: '회사 양식이 다르거나 말투를 바꾸려면 설정에서 켭니다. 켜지 않으면 기본값을 씁니다',
+      act: { label:'설정 보기', run:() => { markSeen('custom'); openConfig(); } } },
+
+    { ok: !!p.url,
+      title: 'PMS에 자동으로 채우기',
+      done: '보고서를 PMS 일일보고 폼에 채워 줍니다',
+      todo: 'PMS 주소와 프로젝트를 적으면 보고서를 그 폼에 채워 줍니다',
+      fields: [{ k:'pms.url', label:'PMS 주소', hint:'예: https://pms.cemware.com', value: p.url },
+               { k:'pms.project', label:'프로젝트', hint:'예: sai — 주소의 /projects/<여기> 부분', value: p.project }] },
+
+    { ok: !!p.has_token, need: !!p.url,
+      title: 'PMS 토큰 (일감을 연결하려면)',
+      done: '토큰이 들어 있습니다. 보고서를 쓸 때 열린 일감 목록을 받아 와 맞는 것만 연결합니다',
+      todo: 'PMS의 "내 계정 > API 접근키"를 넣으면 그날 일과 맞는 일감을 연결해 줍니다. 없어도 나머지는 다 됩니다',
+      fields: [{ k:'pms.token', label:'API 접근키', secret:true, saved: !!p.has_token,
+                 hint:'PMS 오른쪽 위 "내 계정" 화면 아래쪽에 있습니다', value:'' }],
+      optional: true },
+
+    { ok: !!p.signed_in, need: !!p.url,
+      title: 'PMS 로그인',
+      done: '전용 창에 로그인되어 있습니다 (평소 쓰는 브라우저와 따로입니다)',
+      todo: '전용 창에서 한 번만 로그인하면 됩니다. 비밀번호는 저장하지 않습니다',
+      act: { label:'로그인 창 열기', run:() => pmsRun('login') } },
+
+    { ok: h.count > 0, need: !!p.url,
+      title: '내가 쓰던 보고서 가져오기',
+      done: h.count + '건을 받아 두었습니다 (최근 ' + (h.latest || '-') + '). 그 문체와 분류를 따라 씁니다',
+      todo: 'PMS에 올렸던 지난 보고서를 받아 오면 그 문체와 분류 습관대로 씁니다. 없으면 기본 문체로 씁니다',
+      act: { label: h.count > 0 ? '다시 가져오기' : '최근 3달치 가져오기', run:() => pmsRun('fetch') } },
+
+    { ok: !!st.has_submission, need: !!p.url,
+      title: '제출해 보기',
+      done: '가장 최근 일일보고에 제출문이 있습니다. 열어서 "PMS에 채우기"를 누르면 됩니다',
+      todo: '제출문 절이 있는 보고서가 아직 없습니다. 다음 보고서부터 생깁니다',
+      act: st.latest_daily ? { label:'그 보고서 열기', run:() => loadFiles().then(() => openReport(st.latest_daily)) } : null }
+  ];
+}
+
+async function pmsRun(mode){
+  await fetch(api('pms', { mode: mode }), { method:'POST' });
+  flash(mode === 'login' ? '로그인 창을 엽니다'
+      : mode === 'show' ? 'PMS 창을 가져옵니다' : '지난 보고서를 받아 오는 중입니다');
+  if (!polling) { polling = true; pollJobs(); }
+}
+
+async function markSeen(what){
+  try { await fetch(api('seen', { what: what }), { method:'POST' }); } catch (e) {}
+}
+
+// 단계 안에서 바로 고칠 수 있게 한다. "설정 열기"만 두면 화면을 옮겨 다니다
+// 어디까지 했는지 잃는다.
+function stepFields(st, body){
+  const inputs = [];
+  for (const f of st.fields) {
+    const row = el('div', 'sfield');
+    row.appendChild(el('label', '', f.label + (f.saved ? '  ✓ 들어 있음' : '')));
+    const i = document.createElement('input');
+    i.type = f.secret ? 'password' : 'text';
+    i.value = f.value || '';
+    if (f.secret) {
+      i.autocomplete = 'off';
+      // 값을 돌려받지 않으므로 칸은 비어 있다. 비어 있는 칸은 "안 넣었다"로
+      // 읽히므로, 들어 있다는 사실은 칸 안에 적어 둔다.
+      i.placeholder = f.saved ? '저장되어 있습니다 - 바꾸려면 새 값을 붙여넣으세요' : '붙여넣기';
+      if (f.saved) row.classList.add('filled');
+    }
+    // 안내는 칸 아래 한 줄로만 둔다. placeholder 와 겹쳐 적으면 두 번 읽힌다
+    row.appendChild(i);
+    if (f.hint) row.appendChild(el('div', 'shint', f.hint));
+    body.appendChild(row);
+    inputs.push({ k: f.k, el: i, secret: !!f.secret });
+  }
+  const b = el('button', 'quiet', '저장');
+  b.onclick = async () => {
+    const out = {};
+    for (const i of inputs) {
+      const v = i.el.value.trim();
+      if (i.secret && !v) continue;          // 빈 칸은 "그대로 둬라"는 뜻이다
+      const dot = i.k.indexOf('.');
+      const g = i.k.slice(0, dot);
+      (out[g] = out[g] || {})[i.k.slice(dot + 1)] = v;
+    }
+    const r = await fetch(api('config'), { method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(out) });
+    if (!r.ok) { setState('저장하지 못했습니다', true); return; }
+    conf = await r.json();
+    flash('저장했습니다');
+    await openSetup();                        // 상태를 다시 읽어 체크를 갱신한다
+  };
+  body.appendChild(b);
+}
+
+function drawSetup(){
+  const host = $('view');
+  host.textContent = '';
+  const box = el('div', 'setup');          // #view 의 class 는 그대로 둔다
+  host.appendChild(box);
+  const steps = setupSteps(setup || { reports:{}, custom:{}, pms:{} });
+  const left = steps.filter(s => !s.ok && !s.optional).length;
+  box.appendChild(el('h1', 'setuphead',
+    left ? '아직 ' + left + '가지가 남았습니다' : '다 되어 있습니다'));
+  box.appendChild(el('div', 'setuplede',
+    left ? '아래에서 바로 채울 수 있습니다' : '설정을 바꾸고 싶으면 아래에서 고칩니다'));
+
+  for (const st of steps) {
+    const row = el('div', 'step' + (st.ok ? ' ok' : '') + (st.need === false ? ' wait' : ''));
+    const mark = el('span', 'mark', st.ok ? '✓' : (st.need === false ? '·' : '○'));
+    row.appendChild(mark);
+    const body = el('div', 'body');
+    body.appendChild(el('div', 't', st.title + (st.optional && !st.ok ? ' (선택)' : '')));
+    body.appendChild(el('div', 'd', st.ok ? st.done : st.todo));
+    // 끝난 줄에서도 단추는 남긴다. 다시 가져오거나 설정을 다시 여는 일은
+    // 처음 한 번으로 끝나지 않는다.
+    if (st.need === false) body.appendChild(el('div', 'd', '위의 PMS 주소를 먼저 채우면 할 수 있습니다'));
+    else if (st.fields) stepFields(st, body);
+    else if (st.act) {
+      const b = el('button', 'quiet', st.act.label);
+      b.onclick = st.act.run;
+      body.appendChild(b);
+    }
+    row.appendChild(body);
+    box.appendChild(row);
+  }
+}
+
+async function openSetup(){
+  if (!canLeave()) return;
+  setup = await (await fetch(api('setup'))).json();
+  view = 'setup'; editing = false;
+  paint();
+  $('sheet').scrollTop = 0;
+}
+
 async function openConfig(){
   if (!canLeave()) return;
   if (conf === null) conf = await (await fetch(api('config'))).json();
@@ -1850,6 +2343,13 @@ async function openConfig(){
   fillBins();
 }
 $('tabConfig').onclick = openConfig;
+$('tabSetup').onclick = openSetup;
+$('pmsFill').onclick = async () => {
+  const r = await fetch(api('pms', { path: current }), { method:'POST' });
+  if (!r.ok) { setState(await r.text(), true); return; }
+  flash('PMS 폼을 채우는 중입니다');
+  if (!polling) { polling = true; pollJobs(); }
+};
 $('runDaily').onclick = () => run('daily');
 $('runWeekly').onclick = () => run('weekly');
 $('prev').onclick = () => { const n = neighborsOf(current).prev; if (n) openReport(n.path); };
@@ -1955,6 +2455,9 @@ document.addEventListener('keydown', e => {
   try {
     await loadFiles();
     await openReport(START);
+    // 아직 아무것도 없는 사람에게는 문서 대신 길잡이를 먼저 보여 준다.
+    // 쓰던 사람의 첫 화면은 그대로 둔다.
+    if (!START && !current) await openSetup();
   } catch (e) {
     $('view').innerHTML = '<p>보고서를 읽지 못했습니다: ' + esc(String(e)) + '</p>';
   }
@@ -2039,6 +2542,8 @@ def make_handler(root, report_path, page, readme_path):
                     return self._send(404, b'no icon')
                 with io.open(ICON_PATH, 'rb') as fh:
                     return self._send(200, fh.read(), 'image/x-icon')
+            if leaf == 'setup':
+                return self._json(setup_status(root))
             if leaf == 'readme':
                 if not readme_path:
                     return self._send(404, b'no readme')
@@ -2081,6 +2586,23 @@ def make_handler(root, report_path, page, readme_path):
                 if not job_id:
                     return self._send(400, b'bad mode')
                 return self._json({'id': job_id})
+            if leaf == 'seen':
+                what = query.get('what')
+                if what in SEEN_KEYS:
+                    cfg = read_config(root)
+                    seen = [x for x in (cfg.get('setup_seen') or []) if x in SEEN_KEYS]
+                    if what not in seen:
+                        seen.append(what)
+                        cfg['setup_seen'] = seen
+                        with io.open(os.path.join(root, 'config.json'), 'w',
+                                     encoding='utf-8', newline='') as fh:
+                            fh.write(json.dumps(cfg, ensure_ascii=False, indent=2) + os.linesep)
+                return self._json({'ok': True})
+            if leaf == 'pms':
+                job_id, why = start_pms(root, query.get('path'), query.get('mode') or 'fill')
+                if not job_id:
+                    return self._send(400, (why or 'bad request').encode('utf-8'))
+                return self._json({'id': job_id})
             if leaf == 'dismiss':
                 return self._json({'dropped': drop_job(query.get('id'))})
             target = self._target(query)
@@ -2119,7 +2641,8 @@ def main():
     page = build_page(os.path.basename(report) if report else 'work-report',
                       cfg.get('submit_url') or '',
                       cfg.get('submit_label') or '제출하러 가기',
-                      bool(readme))
+                      bool(readme),
+                      bool((cfg.get('pms') or {}).get('url')))
 
     probe = socket.socket()
     probe.bind(('127.0.0.1', 0))       # 바깥에서는 접근할 수 없다
