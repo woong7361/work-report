@@ -29,7 +29,7 @@ from viewer_files import (AREAS, CUSTOM, ICON_PATH, SEEN_KEYS, asset_path,
                           asset_sibling, find_guide, list_custom, list_reports,
                           load_config, newest_report, read_config, safe_join,
                           seed_custom, write_config)
-from viewer_jobs import (drop_job, jobs, jobs_lock, job_status, start_job,
+from viewer_jobs import (drop_job, jobs, jobs_lock, job_status, resolve_bins, start_job,
                          start_pms)
 from viewer_setup import setup_status
 

@@ -5,7 +5,7 @@ import os
 import urllib.error
 import urllib.request
 
-from pms_config import EXIT_CONFIG, EXIT_ENV, Stop
+from pms_config import EXIT_CONFIG, EXIT_ENV, EXIT_OK, Stop
 
 NL = chr(10)
 
