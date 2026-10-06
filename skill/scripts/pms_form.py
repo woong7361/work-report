@@ -42,7 +42,6 @@ def validate_report(path):
     울타리나 들여쓰기가 그대로 PMS에 올라가고, 그때는 사람이 지워야 한다.
     제출문 절이 없는 것은 잘못이 아니다 - 만들지 않아도 되는 절이다.
     """
-    import re
     try:
         body = io.open(path, encoding='utf-8-sig').read()
     except OSError as e:

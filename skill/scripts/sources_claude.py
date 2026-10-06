@@ -5,6 +5,7 @@ import os
 from collections import Counter
 from datetime import datetime, timedelta
 
+from model import Session
 from prompts import EDIT_TOOLS
 
 
@@ -42,7 +43,6 @@ def merge_replays(sessions):
 
 def scan_claude(ctx, dfrom, dto):
     """~/.claude/projects/<경로>/<세션>.jsonl"""
-    from collect import Session
     sessions = []
     auto = Counter()
     try:

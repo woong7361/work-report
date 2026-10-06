@@ -12,6 +12,7 @@
   python tests/acceptance.py collect    이름에 collect 가 들어간 것만
 """
 
+import glob
 import io
 import json
 import os
@@ -96,8 +97,8 @@ CDMS
 
 @case
 def 제출문을_분류별로_가른다():
-    import viewer
-    out = viewer.parse_submission(SUBMISSION)
+    from submission import parse_submission
+    out = parse_submission(SUBMISSION)
     same([i['category'] for i in out['items']], ['개발', '회의'], '분류가 순서대로 나와야 한다')
     same(out['linked_issue_ids'], [1396, 1406], '일감 번호를 뽑아야 한다')
     truthy('CDMS' in out['items'][0]['content'], '같은 분류의 여러 주제가 한 덩어리여야 한다')
@@ -106,15 +107,15 @@ def 제출문을_분류별로_가른다():
 
 @case
 def 제출문이_없으면_빈_결과다():
-    import viewer
-    out = viewer.parse_submission(u'# 보고서\n\n## 1. 요약\n- 없다\n')
+    from submission import parse_submission
+    out = parse_submission(u'# 보고서\n\n## 1. 요약\n- 없다\n')
     same(out['items'], [], '없으면 빈 목록이어야 한다')
 
 
 @case
 def 제출문의_코드_울타리는_버린다():
-    import viewer
-    out = viewer.parse_submission(u'## 0. 제출문\n\n```\n(개발)\n일\n- 한 줄\n```\n')
+    from submission import parse_submission
+    out = parse_submission(u'## 0. 제출문\n\n```\n(개발)\n일\n- 한 줄\n```\n')
     same(len(out['items']), 1, '울타리가 덩어리를 늘리면 안 된다')
     truthy('`' not in out['items'][0]['content'], '울타리가 본문에 섞이면 안 된다')
 
@@ -175,6 +176,50 @@ def 설정에_남은_토큰은_금고로_옮겨진다():
         bed.close()
 
 
+@case
+def 바꾼_토큰이_옛_토큰에_덮이지_않는다():
+    """금고와 설정 파일 중 어느 쪽이 최신인지에 두 모듈이 합의해야 한다.
+
+    쓰는 쪽(뷰어)은 금고에 넣고, 읽는 쪽(pms)은 설정에 남은 평문을 옮겨 심는다.
+    둘이 반대로 가정하면 화면에서 새로 넣은 토큰이 옛 평문에 덮여 사라진다.
+    """
+    import pms, viewer
+    bed = Bed({'author': 't', 'pms': {'url': 'https://x', 'project': 'p', 'token': 'OLD123'}})
+    try:
+        os.environ['WORK_REPORT_DIR'] = bed.root
+        viewer.write_config(bed.root, {'pms': {'token': 'NEW456'}})
+        for nth in ('첫', '두'):
+            _root, cfg = pms.load_cfg()
+            same(cfg['token'], 'NEW456', '%s 번째 실행에서도 새 토큰이어야 한다' % nth)
+    finally:
+        os.environ.pop('WORK_REPORT_DIR', None)
+        bed.close()
+
+
+@case
+def 토큰이_있는지는_금고_파일로_알_수_있다():
+    """러너(PowerShell)는 금고를 열지 못하므로 파일이 있는지로만 판단한다.
+
+    토큰을 설정 파일로 되돌리거나 금고 경로를 옮기면 러너가 일감 목록을 조용히
+    건너뛴다. 경계의 양쪽을 여기서 함께 붙잡는다.
+    """
+    import viewer
+    bed = Bed({'author': 't', 'pms': {'url': 'https://x', 'project': 'p'}})
+    try:
+        vault = os.path.join(bed.root, 'pms', 'secrets.dat')
+        same(os.path.isfile(vault), False, '토큰 전에는 없어야 한다')
+        viewer.write_config(bed.root, {'pms': {'token': 'NEW456'}})
+        truthy(os.path.isfile(vault), '토큰을 저장하면 러너가 보는 자리에 생겨야 한다')
+        left = (json.loads(bed.read('config.json')).get('pms') or {}).get('token')
+        same(left, None, '설정 파일에는 토큰이 남으면 안 된다')
+        runner = io.open(os.path.normpath(os.path.join(SCRIPTS, 'run-report.ps1')),
+                         encoding='utf-8').read()
+        truthy('$cfg.pms.token' not in runner,
+               '러너가 설정 파일의 토큰을 보면 안 된다 (금고로 옮긴 값이다)')
+    finally:
+        bed.close()
+
+
 # ---------------------------------------------------------------- 설정 저장
 
 @case
@@ -197,28 +242,61 @@ def 뷰어가_허용된_설정만_저장한다():
         bed.close()
 
 
+@case
+def 제출_주소는_자바스크립트_문법으로_넘어간다():
+    """페이지 자산은 파이썬이 만들고 브라우저가 읽는다. 넘기는 문법이 어긋나면
+    .js 안에서는 & 가 &amp; 로 남고, 역슬래시로 끝나는 값은 문자열을 닫지 못해
+    화면이 통째로 뜨지 않는다.
+    """
+    import viewer
+
+    def head(url):
+        return viewer.build_asset('app.js', 'T', url, 'Go', False, False).splitlines()[0]
+
+    truthy('&amp;' not in head('https://x/r?a=1&b=2'), '& 가 엔티티로 바뀌면 안 된다')
+    for url in ('https://x/r?a=1&b=2', 'C:' + chr(92) + 'share' + chr(92),
+                'https://x/a"b', ''):
+        truthy(json.dumps(url) in head(url),
+               '%r 는 자바스크립트 문자열로 들어가야 한다' % url)
+
+
+@case
+def 파워셸_스크립트는_ASCII_전용이다():
+    """BOM 없는 .ps1 에 비ASCII 가 들어가면 코드페이지에 따라 깨진다.
+
+    PowerShell 5.1 은 BOM 없는 파일을 ANSI 로 읽는다. 사용자에게 보일 글은
+    messages.json 이 들고 있고 스크립트 본문은 ASCII 로 둔다는 규칙이다.
+    """
+    for path in sorted(glob.glob(os.path.join(SCRIPTS, '*.ps1'))):
+        raw = io.open(path, 'rb').read()
+        body = raw[3:] if raw.startswith(b'\xef\xbb\xbf') else raw
+        bad = [b for b in body if b > 127]
+        truthy(not bad or raw.startswith(b'\xef\xbb\xbf'),
+               '%s: BOM 없이 비ASCII 가 %d바이트 있다' % (os.path.basename(path), len(bad)))
+
+
 # ---------------------------------------------------------------- 수집기
 
 @case
 def 수집기가_비밀값은_가리고_경로는_남긴다():
-    import collect
-    masked = collect.redact(u'api_key = AKIAIOSFODNN7EXAMPLEKEY123456')
+    from prompts import redact
+    masked = redact(u'api_key = AKIAIOSFODNN7EXAMPLEKEY123456')
     truthy('<가림>' in masked, '이름표 붙은 키는 가려야 한다')
     kept = u'src/components/dashboard/widgets/ChartPanel 수정'
-    same(collect.redact(kept), kept, '긴 경로는 그대로 둬야 한다')
-    truthy('<가림>' in collect.redact(u'토큰 sk1aB9xQ7zR2mN4pV6wL8kJ3hG5dF0sA2cE7yT1uI9oP'), '긴 토큰은 가려야 한다')
+    same(redact(kept), kept, '긴 경로는 그대로 둬야 한다')
+    truthy('<가림>' in redact(u'토큰 sk1aB9xQ7zR2mN4pV6wL8kJ3hG5dF0sA2cE7yT1uI9oP'), '긴 토큰은 가려야 한다')
 
 
 @case
 def 수집기가_worktree를_저장소로_본다():
-    import collect
+    from sources_git import _repo_of
     bed = Bed()
     try:
         wt = os.path.join(bed.root, 'wt')
         os.makedirs(os.path.join(wt, 'src'))
         with io.open(os.path.join(wt, '.git'), 'w', encoding='utf-8') as fh:
             fh.write('gitdir: /elsewhere\n')
-        same(collect._repo_of(os.path.join(wt, 'src', 'a.py'), {}), wt, 'worktree 도 저장소다')
+        same(_repo_of(os.path.join(wt, 'src', 'a.py'), {}), wt, 'worktree 도 저장소다')
     finally:
         bed.close()
 
@@ -281,15 +359,15 @@ def 러너가_같은_실행이_돌면_건너뛴다():
 
 @case
 def pms가_설정이_비면_무엇을_적을지_알려준다():
-    import pms
+    from pms_config import EXIT_CONFIG, Stop, require_config
     bed = Bed()
     try:
         cfg = {'url': '', 'project': '', 'profile': os.path.join(bed.root, 'browser'), 'port': 9999}
         try:
-            pms.require_config(cfg, bed.root)
+            require_config(cfg, bed.root)
             raise AssertionError('멈춰야 한다')
-        except pms.Stop as stop:
-            same(stop.code, pms.EXIT_CONFIG, '설정 없음은 3이다')
+        except Stop as stop:
+            same(stop.code, EXIT_CONFIG, '설정 없음은 3이다')
             truthy('config.json' in ' '.join(stop.how), '어디를 고칠지 알려야 한다')
     finally:
         bed.close()
@@ -297,10 +375,10 @@ def pms가_설정이_비면_무엇을_적을지_알려준다():
 
 @case
 def pms가_분류_라벨과_값을_모두_받는다():
-    import pms
-    same(pms.category_value('개발'), 'development', '라벨을 값으로 바꿔야 한다')
-    same(pms.category_value('development'), 'development', '값은 그대로여야 한다')
-    same(pms.category_value('없는것'), '없는것', '모르는 것은 그대로 돌려줘야 한다')
+    from pms_form import category_value
+    same(category_value('개발'), 'development', '라벨을 값으로 바꿔야 한다')
+    same(category_value('development'), 'development', '값은 그대로여야 한다')
+    same(category_value('없는것'), '없는것', '모르는 것은 그대로 돌려줘야 한다')
 
 
 # ---------------------------------------------------------------- 시작하기

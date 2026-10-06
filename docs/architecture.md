@@ -33,7 +33,7 @@ flowchart LR
 - `viewer.py`는 HTTP 라우팅과 서비스 조합만 담당한다. 파일·작업·초기 설정·제출은 `viewer_*.py`가, 화면 표현은 `page/`의 HTML·JavaScript·CSS가 담당한다.
 - `pms_browser.py`는 브라우저 연결과 공통 동작만 제공한다. 설정·폼·수집·이슈 규칙은 각각의 `pms_*.py`가 담당한다.
 - PowerShell 환경 책임은 실행 파일 경로, 오류, 출력 형식, 알림, 뷰어 실행 모듈로 나뉜다.
-- 일반 설정과 인증 정보는 각각 `config.json`, `secrets.json`에서 읽는다. 보고서나 로그에 비밀값을 기록하지 않는다.
+- 일반 설정은 `config.json`에서 읽고, 인증 정보는 `pms/secrets.dat`(이 계정에서만 풀리는 암호문)에서 읽는다. 금고가 사실의 원본이며 `config.json`에 평문을 남기지 않는다. 보고서나 로그에도 비밀값을 기록하지 않는다.
 
 ## 모듈 지도
 
@@ -57,6 +57,7 @@ flowchart LR
 | 위치 | 책임 |
 | --- | --- |
 | `skill/scripts/collect.py` | 옵션 해석, 수집 순서 조정, 결과 조합 |
+| `skill/scripts/model.py` | 수집 설정(`Ctx`)·세션(`Session`)과 기록 위치 탐색 |
 | `skill/scripts/sources_claude.py` | Claude 대화 기록 탐색·변환 |
 | `skill/scripts/sources_codex.py` | Codex 대화 기록 탐색·변환 |
 | `skill/scripts/sources_git.py` | Git 로그·변경 파일·커밋 정보 수집 |
@@ -66,6 +67,8 @@ flowchart LR
 | `skill/scripts/render.py` | 수집 결과의 Markdown 렌더링 |
 
 소스는 공통 데이터 구조를 반환하고 서로의 저장 형식에 의존하지 않는다. 새 소스는 `sources_*.py`와 `collect.py` 조합 지점에 추가하며, 보고서 문장 변경은 `render.py`에서 처리한다.
+
+`Ctx`와 `Session`은 조정 모듈과 소스 모듈이 함께 쓰므로 진입점이 아니라 `model.py`가 소유한다. 진입점에 두면 소스가 진입점을 거꾸로 import해야 한다.
 
 ### 로컬 뷰어
 
@@ -88,15 +91,17 @@ flowchart LR
 
 | 위치 | 책임 |
 | --- | --- |
-| `skill/scripts/pms.py` | CLI 호환 이름 제공과 PMS 작업 조합 |
+| `skill/scripts/pms.py` | CLI 인자 해석과 PMS 작업 조합 |
 | `skill/scripts/pms_config.py` | URL·프로젝트·필드 설정 읽기 |
 | `skill/scripts/pms_browser.py` | Playwright 연결과 공통 페이지 동작 |
 | `skill/scripts/pms_form.py` | 설정 폼 수집과 정규화 |
 | `skill/scripts/pms_harvest.py` | 보고서·프로젝트 데이터 수집 |
 | `skill/scripts/pms_issues.py` | 이슈 조회·생성·상태 처리 |
-| `skill/scripts/secrets.py` | `secrets.json` 인증 정보 읽기 |
+| `skill/scripts/secrets.py` | `pms/secrets.dat` 금고 읽기·쓰기 (Windows DPAPI) |
 
-`pms.py`는 외부 호출자에게 기존 함수 이름을 유지하는 어댑터다. 실제 규칙은 세부 모듈에 있으므로 브라우저 연결 방식 변경이 설정·폼·이슈 규칙으로 번지지 않는다. PMS 명령은 `0` 성공, `1` 입력·설정 오류, `2` 인증·브라우저 연결 실패, `3` 대상 미발견, `4` 저장·제출 실패를 반환한다.
+`pms.py`는 인자를 읽어 알맞은 모듈을 부르는 조정 모듈이다. 실제 규칙은 세부 모듈에 있으므로 브라우저 연결 방식 변경이 설정·폼·이슈 규칙으로 번지지 않는다. 자기가 쓰지 않는 이름은 가져오지 않는다 — 통과만 시키는 이름은 호출자가 소유 모듈을 보지 못하게 가린다.
+
+PMS 명령의 종료 코드는 `pms_config.py`가 소유하고 뷰어(`viewer_jobs.PMS_STATE`)와 `pms.ps1`이 그것을 쓴다. `0` 채웠다, `10` 채울 것이 없어 폼만 열었다, `2` 로그인 필요, `3` 설정이 비었다, `4` playwright 없음, `5` 크롬·포트 문제다. 숫자를 다른 파일에 다시 적지 않는다.
 
 ## 의존성 방향
 
@@ -104,14 +109,17 @@ flowchart LR
 
 ```text
 PowerShell 진입점
-    ├─> collect.py ─> sources_* / custom_files / prompts / render
-    ├─> viewer.py  ─> viewer_files / viewer_jobs / viewer_setup / submission
+    ├─> collect.py ─> model / sources_* / custom_files / render
+    ├─> viewer.py  ─> viewer_files / viewer_jobs / viewer_setup
     └─> pms.py     ─> pms_config / pms_browser / pms_form / pms_harvest / pms_issues
 
-공통 하위 계층 ─> secrets.py / 메시지·경로 상수 / 표준 라이브러리·외부 실행기
+공통 하위 계층 ─> model / prompts / submission / secrets / _log
+                 메시지·경로 상수 / 표준 라이브러리·외부 실행기
 ```
 
-기존 호출 호환성이 필요한 경우 조정 모듈에서 이름을 재수출하고 구현을 중복하지 않는다.
+순환은 없다. 함수 안으로 숨긴 import도 두지 않는다 — 그것은 경계가 틀렸다는 신호이므로, 공유되는 것을 공통 계층으로 내린다.
+
+**같은 사실을 두 곳에 적지 않는다.** 상수는 소유 모듈에서 import하고, 모듈 내부 상태는 묻는 함수를 내준다(예: `viewer_jobs.any_running()`). 언어 경계를 넘는 약속(러너와 금고, 파이썬이 만드는 자바스크립트, 최소 글자수)은 한쪽만 고쳐도 테스트가 통과하므로 `tests/acceptance.py`가 양쪽을 함께 붙잡는다.
 
 ## 실행 흐름
 
@@ -140,14 +148,25 @@ PowerShell 진입점
 
 ## 저장 구조와 확장 위치
 
+설치되는 것과 사용자의 것은 다른 폴더에 있다. 업데이트는 앞쪽만 덮어쓴다.
+
 ```text
-skill/
+skill/                       # 설치물. 업데이트가 통째로 교체한다
 ├─ prompts/ask.json          # 대화형 질문 정의
-├─ scripts/                  # Python 구현과 정적 페이지 자산
+├─ templates/                # 기본 보고서 양식·문체·예시
+├─ assets/                   # 글꼴과 아이콘
+└─ scripts/                  # PowerShell 진입점, Python 구현, 정적 페이지 자산
+   └─ messages.json          # 사용자 메시지
+
+<보고 폴더>                   # 사용자의 것. 업데이트가 건드리지 않는다
 ├─ config.json               # 일반 설정
-├─ secrets.json              # 인증 정보; 버전 관리 대상 아님
-└─ messages.json             # 사용자 메시지
+├─ custom/                   # 사용자가 고친 양식·문체·예시
+├─ daily/ weekly/ log/ raw/  # 산출물 (월 폴더 아래)
+├─ runlog/                   # 실행 기록과 오류 기록
+└─ pms/secrets.dat           # 인증 정보 금고; 버전 관리 대상 아님
 ```
+
+보고 폴더는 `WORK_REPORT_DIR`, 없으면 `~\work-report`다.
 
 생성된 보고서는 날짜별 디렉터리에 저장한다. 경로 조합은 수집기와 뷰어가 임의로 만들지 않고 공통 설정에서 읽는다. 환경별 값은 설정 파일이나 사용자 환경에서 주입하며 비밀번호·API 키를 코드에 넣지 않는다.
 

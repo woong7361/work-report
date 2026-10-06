@@ -12,25 +12,20 @@ import http.server
 import io
 import json
 import os
-import re
 import socket
-import subprocess
 import sys
 import threading
 import time
 import webbrowser
 from urllib.parse import quote, unquote
 
-import secrets as secret_store
 from _log import log_error
 
-from submission import parse_submission, report_date
-from viewer_files import (AREAS, CUSTOM, ICON_PATH, SEEN_KEYS, asset_path,
-                          asset_sibling, find_guide, list_custom, list_reports,
-                          load_config, newest_report, read_config, safe_join,
-                          seed_custom, write_config)
-from viewer_jobs import (drop_job, jobs, jobs_lock, job_status, resolve_bins, start_job,
-                         start_pms)
+from viewer_files import (ICON_PATH, asset_path, find_guide, list_custom,
+                          list_reports, load_config, mark_seen, newest_report,
+                          read_config, safe_join, write_config)
+from viewer_jobs import (any_running, drop_job, job_status, resolve_bins,
+                         start_job, start_pms)
 from viewer_setup import setup_status
 
 IDLE_TIMEOUT = 2 * 60 * 60  # 이 시간 동안 아무 요청이 없으면 스스로 종료한다
@@ -79,7 +74,10 @@ def _render_page(name, title, submit_url, submit_label, has_readme, pms_on):
     with io.open(path, encoding='utf-8') as fh:
         text = fh.read()
     return (text.replace('{{TITLE}}', html_escape(title))
-            .replace('{{SUBMIT_URL}}', html_escape(submit_url or ''))
+            # 이 값은 app.js의 JavaScript 문자열 자리로 들어간다. .js 안에서는
+            # HTML 엔티티가 되돌려지지 않아 &가 &amp;로 남고, 역슬래시로 끝나는
+            # 값은 문자열을 닫지 못해 파일 전체가 깨진다. JSON이 따옴표까지 붙인다.
+            .replace('{{SUBMIT_URL}}', json.dumps(submit_url or ''))
             .replace('{{SUBMIT_LABEL}}', html_escape(submit_label or '제출하러 가기'))
             .replace('{{HAS_README}}', 'true' if has_readme else 'false')
             .replace('{{PMS_ON}}', 'true' if pms_on else 'false'))
@@ -224,17 +222,7 @@ def make_handler(root, report_path, page, readme_path, page_assets=None):
                     return self._send(400, b'bad mode')
                 return self._json({'id': job_id})
             if leaf == 'seen':
-                what = query.get('what')
-                if what in SEEN_KEYS:
-                    cfg = read_config(root)
-                    seen = [x for x in (cfg.get('setup_seen') or []) if x in SEEN_KEYS]
-                    if what not in seen:
-                        seen.append(what)
-                        cfg['setup_seen'] = seen
-                        with io.open(os.path.join(root, 'config.json'), 'w',
-                                     encoding='utf-8', newline='') as fh:
-                            fh.write(json.dumps(cfg, ensure_ascii=False, indent=2) + os.linesep)
-                return self._json({'ok': True})
+                return self._json({'ok': mark_seen(root, query.get('what'))})
             if leaf == 'pms':
                 job_id, why = start_pms(root, query.get('path'), query.get('mode') or 'fill')
                 if not job_id:
@@ -314,9 +302,7 @@ def main():
     # 다만 보고서를 만드는 중이면 끝날 때까지 기다린다.
     while True:
         time.sleep(5)
-        with jobs_lock:
-            busy = any(j['state'] == 'running' for j in jobs.values())
-        if not busy and time.time() - last_seen > IDLE_TIMEOUT:
+        if not any_running() and time.time() - last_seen > IDLE_TIMEOUT:
             break
     server.shutdown()
     clear_mark()

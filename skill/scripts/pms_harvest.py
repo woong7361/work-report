@@ -2,7 +2,6 @@
 import io
 import json
 import os
-import time
 
 from pms_browser import connect, ensure_browser, logged_in, need_login, pick_page
 

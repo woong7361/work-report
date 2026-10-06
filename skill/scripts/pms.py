@@ -24,29 +24,18 @@ import argparse
 import io
 import json
 import os
-import socket
-import subprocess
 import sys
-import time
-import urllib.error
-import urllib.request
 
-import secrets as secret_store
 from _log import log_error
 
-from pms_config import (EXIT_CONFIG, EXIT_ENV, EXIT_LOGIN, EXIT_NOTHING, EXIT_OK,
-                       EXIT_PLAYWRIGHT, HOME, Stop, load_cfg, require_config)
-from pms_browser import (BROWSERS, chrome_path, connect, do_login, ensure_browser,
-                         form_url, free_port, logged_in, need_login, open_form,
-                         pick_page, port_endpoint, window_state)
-from pms_form import (CATEGORIES, CATEGORY_LABEL, CATEGORY_VALUE, EXTRA_FIELDS,
-                      SEL_ADD_ROW, SEL_DATE, SEL_PROGRESS, SEL_EXTRA_LEGEND,
-                      category_value, fill_form, validate_report)
-from pms_harvest import (JS_ROWS, URL_MONTH, as_text, do_fetch, months_back,
-                         my_user_path, summarize, write_patterns, write_samples)
-from pms_issues import do_issues, open_issues
-
-HOME = os.path.expanduser('~')
+from pms_config import (EXIT_NOTHING, EXIT_OK, EXIT_PLAYWRIGHT, HOME, Stop,
+                        load_cfg, require_config)
+from pms_browser import (connect, do_login, ensure_browser, form_url, logged_in,
+                         need_login, open_form, pick_page, port_endpoint, window_state)
+from pms_form import (CATEGORIES, EXTRA_FIELDS, SEL_ADD_ROW, SEL_DATE, fill_form,
+                      validate_report)
+from pms_harvest import do_fetch
+from pms_issues import do_issues
 
 def do_fill(pms, path):
     with io.open(path, encoding='utf-8-sig') as fh:

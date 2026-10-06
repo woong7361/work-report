@@ -16,6 +16,7 @@ from unittest.mock import patch, Mock
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skill' / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 import collect
+import model
 import pms
 import pms_browser
 import pms_form
@@ -173,7 +174,7 @@ class RefactorAcceptance(unittest.TestCase):
         self.write('codex/sessions/2026/10/01/fixture.jsonl', '\n'.join(map(json.dumps, codex)))
         cfg = dict(collect.DEFAULTS, utc_offset_hours=9, exclude_paths=[],
                    _config_path=str(self.root / 'config.json'))
-        ctx = collect.Ctx(cfg)
+        ctx = model.Ctx(cfg)
         ctx.claude_dirs = [str(self.root / 'claude/projects')]
         ctx.codex_dirs = [str(self.root / 'codex/sessions')]
         data = collect.collect(ctx, '2026-10-01', '2026-10-01')

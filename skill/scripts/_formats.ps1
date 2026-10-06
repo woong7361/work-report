@@ -9,9 +9,12 @@
 #
 # The path is handed to the agent on the command line rather than left for it to
 # find, because a file the agent decides not to read fails silently.
-# Unexpected failures from every part land in one file, kept for a month.
-# The run log holds what happened; this holds what went wrong, so a question
-# weeks later has one place to look. Never shown in the viewer.
+
+# A file emptied down to its heading would erase the format, so a floor applies.
+# This must match CUSTOM_MIN / SAMPLE_MIN in custom_files.py: if one side accepts
+# what the other rejects, the collected summary says the example was used while
+# the report has no such section, and nothing on screen explains which is right.
+$script:MinCustomChars = 40
 
 function Get-FormatFile {
     param(
@@ -38,7 +41,7 @@ function Get-FormatFile {
     # An empty or barely filled file would erase the format. Fall back, loudly.
     try { $len = ((Get-Content $custom -Raw -ErrorAction Stop) -replace '\s', '').Length }
     catch { return $template }
-    if ($len -lt 40) { return $template }
+    if ($len -lt $script:MinCustomChars) { return $template }
     return $custom
 }
 
@@ -75,11 +78,7 @@ function Get-SampleFile {
     $mark = '<!-- PASTE BELOW -->'
     $at = $body.LastIndexOf($mark)
     if ($at -ge 0) { $body = $body.Substring($at + $mark.Length) }
-    # Must match SAMPLE_MIN in collect.py. If one side accepts what the other
-    # rejects, the collected summary and the report disagree about whether the
-    # example was used, and nothing on screen explains which is right.
-    $minChars = 40
-    if (($body -replace '\s', '').Length -lt $minChars) { return $null }
+    if (($body -replace '\s', '').Length -lt $script:MinCustomChars) { return $null }
     return $custom
 }
 

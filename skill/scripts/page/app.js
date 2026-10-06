@@ -1,4 +1,4 @@
-const SUBMIT_URL = "{{SUBMIT_URL}}";
+const SUBMIT_URL = {{SUBMIT_URL}};      // 따옴표까지 서버가 JSON으로 붙인다
 const HAS_README = {{HAS_README}};
 // 알림을 눌러 들어오면 어떤 보고서를 열지 주소가 말해 준다
 const START = new URLSearchParams(location.search).get('path') || '';
@@ -40,7 +40,10 @@ function api(path, params){
   const q = new URLSearchParams(params || {}).toString();
   return q ? path + '?' + q : path;
 }
-function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// 따옴표도 가린다. 아래 링크 치환이 결과를 href 속성 안에 넣으므로, 따옴표가
+// 남으면 보고서 글이 속성을 하나 더 만들어 붙일 수 있다.
+function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                         .replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 /* ============================================================ 마크다운
    보고서와 수집 원본, 사용 설명이 쓰는 문법만 다룬다. 들여쓴 목록을 단으로
@@ -52,7 +55,12 @@ function inline(s){
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
     .replace(/~~([^~]+)~~/g, '<del>$1</del>')
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    // http(s)만 링크로 만든다. javascript: 같은 주소는 글자 그대로 둔다 -
+    // 보고서에는 PMS에서 받아온 남의 글도 들어오므로 쓸 수 있는 주소를 좁힌다.
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (all, text, url) =>
+      /^https?:\/\//i.test(url)
+        ? '<a href="' + url + '" target="_blank" rel="noopener">' + text + '</a>'
+        : all);
 }
 function splitRow(line){
   return line.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|');

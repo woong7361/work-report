@@ -5,12 +5,12 @@ import os
 from collections import Counter
 from datetime import datetime, timedelta
 
+from model import Session
 from prompts import PATCH_RE, patch_path
 
 
 def scan_codex(ctx, dfrom, dto):
     """~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl"""
-    from collect import Session
     sessions = []
     auto = Counter()
     if not ctx.codex_dirs:

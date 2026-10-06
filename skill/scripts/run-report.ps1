@@ -112,8 +112,10 @@ function Invoke-Report {
     # read from whatever was left over. No token means no list, and the report
     # is written without issue links - which is what people who do not use them
     # get anyway. A failure here must not stop the report.
+    # The token is kept in the vault, never in config.json, so the vault file is
+    # what says whether a list can be fetched at all.
     $issues = Join-Path $root 'pms\open-issues.md'
-    if ($cfg.pms -and $cfg.pms.token) {
+    if (Test-Path (Join-Path $root 'pms\secrets.dat')) {
         try { & (Join-Path $PSScriptRoot 'pms.ps1') -Issues -Root $root | Out-Null }
         catch { Log "  issues: $($_.Exception.Message)" }
     }
@@ -143,7 +145,9 @@ function Invoke-Report {
     if ($agentHomes.Count -gt 0 -and $withSkill.Count -eq 0) {
         Log "skill '$skillName' is not installed for $Agent"
         Notify -State 'fail' -Detail $log -RangeText $rangeText
-        Write-Error "The skill is not installed for $Agent. Run: install.ps1 -Agents $Agent"
+        # Continue, not the script-wide Stop preference: a terminating Write-Error
+        # would abandon the remaining backfill days and skip Remove-OldFiles.
+        Write-Error "The skill is not installed for $Agent. Run: install.ps1 -Agents $Agent" -ErrorAction Continue
         return $false
     }
 
@@ -222,7 +226,7 @@ function Invoke-Report {
     Write-ErrorLog -Root $root -Where 'runner' `
         -Message "$Mode $RangeFrom..$RangeTo failed (exit=$code written=$written agent=$Agent). see $log"
     Notify -State 'fail' -Detail $log -RangeText $rangeText
-    Write-Error "work-report $Mode failed (exit=$code, written=$written). See $log"
+    Write-Error "work-report $Mode failed (exit=$code, written=$written). See $log" -ErrorAction Continue
     return $false
 }
 

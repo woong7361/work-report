@@ -25,10 +25,14 @@ def load_cfg():
     pms['port'] = int(pms.get('port') or 9333)
     # 토큰은 config.json 에 두지 않는다. 거기는 보고서를 쓰는 에이전트가 읽는
     # 폴더다. 옛 설정에 남아 있으면 금고로 옮기고 설정에서는 지운다.
+    # 금고가 사실의 원본이다. 설정 파일에 남은 평문은 옛 버전이 남긴 흔적이므로
+    # 금고가 비어 있을 때만 옮겨 심는다. 거꾸로 하면 화면에서 새로 넣은 토큰이
+    # 옛 평문에 덮여 조용히 사라지고, 되돌아오지도 않는다.
     stale = (pms.get('token') or '').strip()
     if stale:
         try:
-            secret_store.put(root, 'pms_token', stale)
+            if not secret_store.has(root, 'pms_token'):
+                secret_store.put(root, 'pms_token', stale)
             cfg['pms'] = dict(cfg.get('pms') or {}, token='')
             with io.open(os.path.join(root, 'config.json'), 'w',
                          encoding='utf-8', newline='') as fh:

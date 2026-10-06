@@ -6,6 +6,8 @@ import subprocess
 import threading
 import time
 
+from pms_config import (EXIT_CONFIG, EXIT_ENV, EXIT_LOGIN, EXIT_NOTHING, EXIT_OK,
+                        EXIT_PLAYWRIGHT)
 from submission import parse_submission, report_date
 from viewer_files import safe_join
 
@@ -110,7 +112,11 @@ def resolve_bins(root):
             found = json.loads(done.stdout.decode('utf-8', 'replace').strip() or '{}')
         except Exception:
             found = {}
-        bins_cache = found
+        # 실패는 캐시하지 않는다. 뷰어가 떠 있다는 것 자체가 파이썬이 있다는
+        # 뜻이므로 빈 값은 "못 찾았다"가 아니라 예외·타임아웃이다. 그것을
+        # 들고 있으면 설정 화면이 끝까지 "아무것도 없다"로 굳는다.
+        if found:
+            bins_cache = found
         return found
 
 
@@ -141,7 +147,10 @@ def start_job(root, mode):
     return job_id
 
 
-PMS_STATE = {0: 'done', 10: 'opened', 2: 'login', 3: 'config', 4: 'playwright', 5: 'env'}
+# 종료 코드는 pms 쪽이 소유하는 약속이다. 숫자를 여기 다시 적으면 한쪽이 바뀌어도
+# 모르고, 실제로 문서의 표가 그렇게 어긋났다.
+PMS_STATE = {EXIT_OK: 'done', EXIT_NOTHING: 'opened', EXIT_LOGIN: 'login',
+             EXIT_CONFIG: 'config', EXIT_PLAYWRIGHT: 'playwright', EXIT_ENV: 'env'}
 
 
 def start_pms(root, rel, mode='fill'):
@@ -174,6 +183,10 @@ def start_pms(root, rel, mode='fill'):
     fh = open(log, 'ab')
     head = '[%s] %s %s' % (time.strftime('%H:%M:%S'), mode, rel or '')
     fh.write(head.encode('utf-8') + os.linesep.encode('ascii'))
+    # 자식도 같은 파일에 직접 쓴다. 여기서 비우지 않으면 머리글이 자식의 출력
+    # 뒤로 밀릴 수 있고, pms_note 는 뒤에서 '[' 까지 거슬러 올라가므로 그때
+    # 카드에 엉뚱한 줄이 뜬다.
+    fh.flush()
     proc = subprocess.Popen(argv, cwd=root, stdout=fh, stderr=subprocess.STDOUT,
                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     job_id = 'pms-%s-%d' % (mode, int(started * 1000))
@@ -198,6 +211,16 @@ def pms_note(log):
             break
         out.append(line)
     return list(reversed(out))[-6:]
+
+
+def any_running():
+    """보고서를 만드는 중인 작업이 있나.
+
+    뷰어가 `jobs` 를 직접 들여다보면 작업을 어떻게 담아 두는지가 모듈 밖으로
+    새고, 저장 방식을 바꿀 때 조용히 깨진다. 묻는 쪽에는 답만 준다.
+    """
+    with jobs_lock:
+        return any(j['state'] == 'running' for j in jobs.values())
 
 
 def drop_job(job_id):

@@ -2,8 +2,11 @@
 import io
 import json
 import os
+import threading
 
 import secrets as secret_store
+
+from custom_files import CUSTOM_FILES
 
 
 # 왼쪽 목록에 보여줄 산출물과 이름
@@ -11,9 +14,8 @@ AREAS = (('daily', '일일 보고'), ('weekly', '주간 보고'),
          ('log', '한 일 목록'), ('raw', '수집 원본'))
 
 # 보고 폴더의 custom\ 에 두면 보고서 양식과 문체를 바꾼다. 업데이트가 덮어쓰지 않는다.
-CUSTOM = (('report-format.md', '보고서 양식', 'custom_format'),
-          ('writing-rules.md', '글쓰기 문체', 'custom_rules'),
-          ('my-reports.md', '내 보고서', 'custom_samples'))
+# 목록은 수집기가 소유한다. 여기서 또 적으면 한쪽만 고쳐져도 테스트는 통과한다.
+CUSTOM = CUSTOM_FILES
 
 def load_config(report_path):
     """보고 폴더의 config.json을 찾는다. 보고서는 <root>/<종류>/<월>/ 아래에 있다."""
@@ -176,8 +178,42 @@ def read_config(root):
         return {}
 
 
+# 설정은 읽고-고쳐-쓰기로 저장한다. 설정 저장과 "본 적 있다" 표시가 겹치면
+# 늦게 쓴 쪽이 먼저 읽어 둔 사본으로 파일을 덮어 앞의 변경을 지운다.
+# 이 잠금 아래에서만 쓰고, 쓰는 자리는 이 모듈에만 둔다.
+_config_lock = threading.Lock()
+
+
+def _save_config(root, cfg):
+    path = os.path.join(root, 'config.json')
+    with io.open(path, 'w', encoding='utf-8', newline='') as fh:
+        fh.write(json.dumps(cfg, ensure_ascii=False, indent=2) + os.linesep)
+
+
+def mark_seen(root, what):
+    """그 단계를 본 적이 있다고만 남긴다.
+
+    "내 양식"은 켜지 않는 것도 답이라서 토글로는 끝났는지 알 수 없다.
+    """
+    if what not in SEEN_KEYS:
+        return False
+    with _config_lock:
+        cfg = read_config(root)
+        seen = [x for x in (cfg.get('setup_seen') or []) if x in SEEN_KEYS]
+        if what in seen:
+            return True
+        cfg['setup_seen'] = seen + [what]
+        _save_config(root, cfg)
+    return True
+
+
 def write_config(root, incoming):
     """들어온 값 중 허용된 것만 반영하고 나머지는 그대로 둔다."""
+    with _config_lock:
+        return _write_config(root, incoming)
+
+
+def _write_config(root, incoming):
     cfg = read_config(root)
     for key, kind in EDITABLE.items():
         if key not in incoming:
@@ -223,7 +259,16 @@ def write_config(root, incoming):
             except (TypeError, ValueError):
                 pass
         cfg[group] = cur
-    path = os.path.join(root, 'config.json')
-    with io.open(path, 'w', encoding='utf-8', newline='') as fh:
-        fh.write(json.dumps(cfg, ensure_ascii=False, indent=2) + os.linesep)
+
+    # 옛 설정에 남은 평문 토큰은 여기서 끝낸다. 남겨 두면 읽는 쪽이 그것을 더
+    # 새 값으로 보고 금고를 덮어쓴다. 아직 금고에 없으면 옮겨 심고 나서 지운다.
+    left = str((cfg.get('pms') or {}).get('token') or '').strip()
+    if left:
+        if not token:
+            secret_store.put(root, 'pms_token', left)
+        pms_cfg = dict(cfg.get('pms') or {})
+        pms_cfg.pop('token', None)
+        cfg['pms'] = pms_cfg
+
+    _save_config(root, cfg)
     return cfg
