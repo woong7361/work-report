@@ -356,6 +356,9 @@ nav.side.hide { display:none; }
           border:1px solid var(--warn-line, var(--hair)); border-left:3px solid var(--warn, #b8860b);
           border-radius:var(--r-sm); background:var(--warn-soft, var(--soft));
           font-size:var(--fs-sm); line-height:1.6; color:var(--text); }
+/* 경고가 아니라 안내. 내 양식을 열었을 때 쓰는 색이다. */
+.notice.info { border-left-color:var(--accent); background:var(--accent-soft); }
+.notice div + div { margin-top:3px; }
 
 /* 스크롤은 여기 한 곳에서만 일어난다 */
 .sheet { flex:1 1 auto; overflow-y:auto; }

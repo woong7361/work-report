@@ -9,6 +9,19 @@ const PMS_ON = {{PMS_ON}};
 const AREA_NAME = { daily:'일일 보고', weekly:'주간 보고', log:'한 일 목록', raw:'수집 원본' };
 const AREA_TAG  = { daily:'일일', weekly:'주간', log:'한 일', raw:'원본' };
 const CUSTOM_NAME = { 'report-format.md':'보고서 양식', 'writing-rules.md':'글쓰기 문체' };
+// 내 양식 파일을 열었을 때 알려 줄 것. 양식 파일 안에 적으면 에이전트가 함께 읽어
+// 토큰만 쓰고, 사람은 정작 그 설명을 볼 자리가 없다. 그래서 화면이 들고 있는다.
+const CUSTOM_HELP = {
+  'report-format.md': [
+    '켜는 순간 이 사본은 그 시점에 멈춥니다. 기본 양식이 좋아져도 따라오지 않습니다.',
+    '제출문의 분류 줄과 일감 줄 모양은 바꿀 수 없습니다 - PMS 폼이 정합니다.',
+    '「묶는 방식과 말투」를 비워 두면 지난 제출문을 따릅니다. 적으면 그것이 앞섭니다.'
+  ],
+  'writing-rules.md': [
+    '켜는 순간 이 사본은 그 시점에 멈춥니다.',
+    '기본 원칙 뒤에 덧붙습니다. 제출문 절처럼 형식이 정해진 자리에는 적용되지 않습니다.'
+  ]
+};
 // 제출문 절은 붙여넣기용이라 보고서 전체가 아니라 그 절만 클립보드에 담는다.
 // 앞의 번호(`0. `)는 양식이 붙이는 것이라 떼고 본다. 화면에 원문으로 보여 주는
 // 판단과 복사하는 판단이 같은 절을 가리켜야 하므로 한 곳에서만 정한다.
@@ -281,16 +294,30 @@ function drawRel(){
 // 그 사실을 아는 곳은 화면뿐이다. 프롬프트로 보내지 않는다 - 사람이 고칠 일이다.
 function drawNotice(){
   const box = $('notice');
-  const pmsReady = conf && conf.pms ? !!conf.pms.url : PMS_ON;
-  const show = view === 'doc' && !editing && !!current
-               && areaOf(current) === 'daily' && pmsReady && !toCopy().part;
-  if (!show) { box.hidden = true; box.textContent = ''; return; }
   box.textContent = '';
-  box.appendChild(el('span', '',
-    '이 보고서에는 제출문 절이 없습니다. PMS에 채우면 폼만 열립니다. '));
-  box.appendChild(el('span', '',
-    '절 제목은 "## 0. 제출문" 이어야 합니다 - 보고서 양식에서 이 제목을 바꿨다면 되돌려 주세요.'));
-  box.hidden = false;
+  box.className = 'notice';
+  box.hidden = true;
+  if (view !== 'doc' || editing || !current) return;
+
+  // 내 양식을 열었을 때: 이 파일이 무엇이고 무엇을 바꿀 수 없는지
+  if (areaOf(current) === 'custom') {
+    const help = CUSTOM_HELP[current.split('/').pop()];
+    if (!help) return;
+    box.className = 'notice info';
+    for (const line of help) box.appendChild(el('div', '', line));
+    box.hidden = false;
+    return;
+  }
+
+  // 일일보고인데 제출문 절이 없을 때: PMS 채우기가 폼만 연다
+  const pmsReady = conf && conf.pms ? !!conf.pms.url : PMS_ON;
+  if (areaOf(current) === 'daily' && pmsReady && !toCopy().part) {
+    box.appendChild(el('div', '',
+      '이 보고서에는 제출문 절이 없습니다. PMS에 채우면 폼만 열립니다.'));
+    box.appendChild(el('div', '',
+      '절 제목은 "## 0. 제출문" 이어야 합니다 - 보고서 양식에서 이 제목을 바꿨다면 되돌려 주세요.'));
+    box.hidden = false;
+  }
 }
 
 function layout(){
