@@ -99,11 +99,17 @@ function Invoke-Report {
     $ask = $ask.Replace('{from}', $RangeFrom).Replace('{to}', $RangeTo)
     # Hand over the exact files to follow. Leaving the agent to find them means
     # a silent miss when it decides not to look.
+    # The submission section is what goes into the PMS form, so whether to write
+    # it depends on using PMS - not on having style examples. Tying it to the
+    # examples file would drop the section for everyone who never turned that on.
+    $submitting = [bool]($cfg -and $cfg.pms -and $cfg.pms.url)
+
     $fmt = Get-FormatFile -Name 'report-format.md' -Root $root -Config $cfg -Flag 'custom_format'
     $rules = Get-FormatFile -Name 'writing-rules.md' -Root $root -Config $cfg -Flag 'custom_rules'
     $samples = Get-SampleFile -Root $root -Config $cfg
     if ($fmt) { $ask += ' ' + ([string]$prompts.files.report_format).Replace('{path}', $fmt) }
     if ($rules) { $ask += ' ' + ([string]$prompts.files.writing_rules).Replace('{path}', $rules) }
+    if ($submitting) { $ask += ' ' + [string]$prompts.files.submission }
     if ($samples) { $ask += ' ' + ([string]$prompts.files.samples).Replace('{path}', $samples) }
     # Counted facts about how the person has filled the submission form before.
     # Written by pms.ps1 -Fetch; absent until that has run, and absent for anyone

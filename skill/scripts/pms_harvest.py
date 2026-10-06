@@ -68,16 +68,23 @@ def my_user_path(pg):
 def as_text(report):
     """보고서 한 건을 예시로 쓸 평문으로.
 
-    폼에 들어 있던 모양 그대로 둔다. 보기 좋으라고 들여쓰기를 넣으면 예시를
+    제출문 절과 같은 모양으로 적는다 - 예시가 양식과 다른 모양이면 읽는 쪽이
+    어느 쪽을 따라야 할지 알 수 없다. 그래서 날짜는 주석으로 빼고(제출문에는
+    날짜 줄이 없다), 연결된 일감은 양식이 정한 자리인 맨 끝에 둔다.
+
+    폼에 들어 있던 본문은 그대로 둔다. 보기 좋으라고 들여쓰기를 넣으면 예시를
     읽은 쪽이 그 들여쓰기까지 따라 쓴다 - 예시는 꾸미는 것이 아니라 베끼는 것이다.
     """
-    lines = ['[%s]' % report['date']]
+    lines = ['<!-- %s -->' % report['date']]
     for sec in report['secs']:
         for g in sec['groups']:
             lines.append('(%s)' % g['badge'] if g['badge'] else '(분류 없음)')
             for line in g['text'].splitlines():
                 if line.strip():
                     lines.append(line.strip())
+    ids = [str(x) for x in (report.get('issues') or [])]
+    if ids:
+        lines.append('연결된 일감: ' + ', '.join('#' + x for x in ids))
     return NL.join(lines)
 
 
@@ -91,9 +98,12 @@ def write_samples(root, reports, keep):
     if not os.path.isfile(path):
         return None
     body = io.open(path, encoding='utf-8-sig').read()
+    # 보고서 사이는 --- 로 나눈다. 안내문이 사람에게 시키는 규칙과 같은 모양이어야
+    # 손으로 넣은 것과 받아온 것이 한 파일에서 같게 읽힌다.
+    joined = (NL + '---' + NL).join(as_text(r) for r in reports[:keep])
     block = NL.join([MARK_BEGIN,
-                        '<!-- PMS에서 받아온 내 일일보고다. 손으로 고치지 마라 - 다음 수집이 덮는다. -->',
-                        ''] + [as_text(r) for r in reports[:keep]] + [MARK_END, ''])
+                        '<!-- PMS에서 받아온 내 지난 제출문이다. 손으로 고치지 마라 - 다음 수집이 덮는다. -->',
+                        '', joined, MARK_END, ''])
     if MARK_BEGIN in body and MARK_END in body:
         head, rest = body.split(MARK_BEGIN, 1)
         _old, tail = rest.split(MARK_END, 1)
@@ -117,23 +127,21 @@ def summarize(reports):
     rows = {}
     with_issues = 0
     issue_count = 0
-    examples = {}
     for r in reports:
         groups = [g for sec in r['secs'] if '한 일' in sec['head'] for g in sec['groups']]
         rows[len(groups)] = rows.get(len(groups), 0) + 1
         for g in groups:
             key = g['badge'] or '(분류 없음)'
             cats[key] = cats.get(key, 0) + 1
-            examples.setdefault(key, [])
-            if len(examples[key]) < 3 and g['text'].strip():
-                examples[key].append({'date': r['date'], 'text': g['text']})
         ids = r.get('issues') or []
         if ids:
             with_issues += 1
             issue_count += len(ids)
+    # 본문은 세지 않는다. 문체 예시는 custom/my-reports.md 가 전담한다 -
+    # 그쪽에만 토글과 길이 검증이 걸려 있어서, 여기 본문을 함께 담으면
+    # "지난 제출문 따라하기"를 꺼도 지난 보고서 글이 에이전트에게 간다.
     return {'reports': len(reports), 'categories': cats, 'rows_per_report': rows,
-            'reports_with_issues': with_issues, 'issue_links': issue_count,
-            'examples': examples}
+            'reports_with_issues': with_issues, 'issue_links': issue_count}
 
 
 def write_patterns(root, reports, stat):
@@ -164,21 +172,6 @@ def write_patterns(root, reports, stat):
     else:
         L.append('- %d건 모두 쓰지 않았다.' % stat['reports'])
         L.append('- 근거 없이 새로 체크하지 않는다. 다만 폼에 목록은 그대로 있다.')
-    L.append('')
-    L.append('## 분류별 예시')
-    L.append('')
-    # 울타리가 예시의 일부로 읽히면 보고서에 그대로 따라 들어간다. 한 번 겪은 일이다.
-    L.append('아래 울타리(```)는 예시를 구분하려고 친 것이다. 보고서에는 쓰지 않는다.')
-    L.append('')
-    for k, items in sorted(stat['examples'].items(), key=lambda x: -stat['categories'].get(x[0], 0)):
-        L.append('### %s' % k)
-        L.append('')
-        for e in items:
-            L.append('%s' % e['date'])
-            L.append('```')
-            L.extend(e['text'].splitlines())
-            L.append('```')
-            L.append('')
     folder = os.path.dirname(path)
     if not os.path.isdir(folder):
         os.makedirs(folder)
@@ -227,7 +220,7 @@ def do_fetch(pms, root, months, keep):
         if sample:
             print('문체 예시   : %s (최근 %d건)' % (sample, min(keep, len(mine))))
         else:
-            print('문체 예시   : custom/my-reports.md 가 없다. 설정에서 "내 보고서 따라하기"를 켜면 생긴다')
+            print('문체 예시   : custom/my-reports.md 가 없다. 설정에서 "지난 제출문 따라하기"를 켜면 생긴다')
         return 0
     finally:
         browser.close()

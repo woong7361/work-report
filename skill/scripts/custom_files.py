@@ -15,7 +15,7 @@ import re
 CUSTOM_FILES = (
     ('report-format.md', '보고서 양식', 'custom_format'),
     ('writing-rules.md', '글쓰기 문체', 'custom_rules'),
-    ('my-reports.md', '내 보고서', 'custom_samples'),
+    ('my-reports.md', '지난 제출문', 'custom_samples'),
 )
 CUSTOM_MAX = 8 * 1024       # 이보다 크면 양식이 아니라 다른 글이다
 CUSTOM_MIN = 40             # 제목만 남기고 지운 파일을 양식으로 쓰면 보고서가 빈다

@@ -152,7 +152,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$s\collect.ps1" -From 2026-
 | `writing-rules.md` | `custom_rules` | 기본 문체 원칙 뒤에 덧붙는다 |
 | `my-reports.md` | `custom_samples` | 지난 보고서를 예시로 삼아 제출문을 쓴다 |
 
-### 내 보고서 따라하기
+### 지난 제출문 따라하기
 
 `my-reports.md`의 표시선(`<!-- PASTE BELOW -->`) 아래에 최근 제출한 보고서를
 그대로 붙여넣는다. 여러 개를 `---` 한 줄로 나눠 넣고, 최근 것을 위에 둔다.
@@ -189,7 +189,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$s\collect.ps1" -From 2026-
 | Python을 못 찾는다 | 설치 중에 물어보면 `Y`를 누른다. 직접 깔려면 python.org에서 받고 `Add python.exe to PATH`를 켠다. `WindowsApps`의 것은 실제 Python이 아니다 |
 | 기록이 안 잡힌다 | `collect.ps1 -Check`로 찾은 폴더와 파일 수를 확인한다 |
 | 문체를 바꾸고 싶다 | 설정에서 `내 글쓰기 문체 쓰기`를 켜고 `custom\writing-rules.md`를 고친다 |
-| 보고서가 내 말투가 아니다 | 설정에서 `내 보고서 따라하기`를 켜고 `custom\my-reports.md`에 지난 보고서를 붙여넣는다 |
+| 보고서가 내 말투가 아니다 | 설정에서 `지난 제출문 따라하기`를 켜고 `custom\my-reports.md`에 지난 제출문을 붙여넣는다 |
 | 더블클릭했더니 경고가 뜬다 | 인터넷에서 받은 파일 표시 때문이다. `실행`을 누른다 |
 | zip 파일이 실행을 거부한다 | `Get-ChildItem -Recurse \| Unblock-File` |
 

@@ -54,7 +54,7 @@ def do_fill(pms, path):
         open_form(pms, url)
         print('채울 것이 없어 폼만 열었다.')
         print('  제출문 절이 있는 보고서를 먼저 만들면 그 내용으로 채운다.')
-        print('  앱 설정에서 "내 보고서 따라하기"를 켜고 pms.ps1 -Fetch 를 한 번 돌리면 생긴다.')
+        print('  앱 설정에서 "지난 제출문 따라하기"를 켜고 pms.ps1 -Fetch 를 한 번 돌리면 생긴다.')
         return EXIT_NOTHING
 
     # 시작 명령에 URL을 넘기면 크롬이 탭을 하나 만든 뒤 Playwright가 같은

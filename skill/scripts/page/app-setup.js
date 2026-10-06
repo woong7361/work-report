@@ -20,7 +20,7 @@ const FIELDS = [
     file:'custom/report-format.md', hint:'보고서 양식을 통째로 바꾼다' },
   { k:'custom_rules',   t:'bool', def:false, label:'내 글쓰기 문체 쓰기',
     file:'custom/writing-rules.md', hint:'기본 원칙 뒤에 덧붙인다' },
-  { k:'custom_samples', t:'bool', def:false, label:'내 보고서 따라하기',
+  { k:'custom_samples', t:'bool', def:false, label:'지난 제출문 따라하기',
     file:'custom/my-reports.md',
     hint:'붙여넣은 지난 보고서를 문체 예시로 쓴다.' +
          '\n보고서 맨 앞에 그 문체로 쓴 제출문 절이 생긴다.' +
@@ -323,7 +323,7 @@ function setupSteps(st){
       act: { label:'로그인 창 열기', run:() => pmsRun('login') } },
 
     { ok: h.count > 0, need: !!p.url,
-      title: '내가 쓰던 보고서 가져오기',
+      title: '지난 제출문 가져오기',
       done: h.count + '건을 받아 두었습니다 (최근 ' + (h.latest || '-') + '). 그 문체와 분류를 따라 씁니다',
       todo: 'PMS에 올렸던 지난 보고서를 받아 오면 그 문체와 분류 습관대로 씁니다. 없으면 기본 문체로 씁니다',
       act: { label: h.count > 0 ? '다시 가져오기' : '최근 3달치 가져오기', run:() => pmsRun('fetch') } },

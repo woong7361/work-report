@@ -9,7 +9,7 @@ const PMS_ON = {{PMS_ON}};
 const AREA_NAME = { daily:'일일 보고', weekly:'주간 보고', log:'한 일 목록', raw:'수집 원본' };
 const AREA_TAG  = { daily:'일일', weekly:'주간', log:'한 일', raw:'원본' };
 const CUSTOM_NAME = { 'report-format.md':'보고서 양식', 'writing-rules.md':'글쓰기 문체',
-                      'my-reports.md':'내 보고서' };
+                      'my-reports.md':'지난 제출문' };
 // 제출문 절은 붙여넣기용이라 보고서 전체가 아니라 그 절만 클립보드에 담는다
 const SUBMIT_HEAD = '제출문';
 // 보고서를 쓸 때 근거로 들춰 보는 것들이다. 매번 펼쳐져 있으면 목록만 길어진다
