@@ -109,8 +109,13 @@ function Invoke-Report {
     $samples = Get-SampleFile -Root $root -Config $cfg
     if ($fmt) { $ask += ' ' + ([string]$prompts.files.report_format).Replace('{path}', $fmt) }
     if ($rules) { $ask += ' ' + ([string]$prompts.files.writing_rules).Replace('{path}', $rules) }
-    if ($submitting) { $ask += ' ' + [string]$prompts.files.submission }
-    if ($samples) { $ask += ' ' + ([string]$prompts.files.samples).Replace('{path}', $samples) }
+    if ($submitting) {
+        # The shape is the tool's: the form defines it, so it is never the custom copy.
+        $shape = Join-Path (Join-Path (Get-SkillRoot) 'templates') 'submission-format.md'
+        $ask += ' ' + ([string]$prompts.files.submission).Replace('{path}', $shape)
+    }
+    # Wording examples only matter for the submission section, so they go with it.
+    if ($submitting -and $samples) { $ask += ' ' + ([string]$prompts.files.samples).Replace('{path}', $samples) }
     # Counted facts about how the person has filled the submission form before.
     # Written by pms.ps1 -Fetch; absent until that has run, and absent for anyone
     # who does not use the form. Passed only when it exists, like the files above.

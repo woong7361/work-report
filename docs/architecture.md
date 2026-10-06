@@ -33,6 +33,7 @@ flowchart LR
 - `viewer.py`는 HTTP 라우팅과 서비스 조합만 담당한다. 파일·작업·초기 설정·제출은 `viewer_*.py`가, 화면 표현은 `page/`의 HTML·JavaScript·CSS가 담당한다.
 - `pms_browser.py`는 브라우저 연결과 공통 동작만 제공한다. 설정·폼·수집·이슈 규칙은 각각의 `pms_*.py`가 담당한다.
 - PowerShell 환경 책임은 실행 파일 경로, 오류, 출력 형식, 알림, 뷰어 실행 모듈로 나뉜다.
+- 제출문의 **구조**는 PMS 폼이 정하므로 `templates/submission-format.md`가 소유하고 업데이트가 항상 덮는다. **무엇을 얼마나 쓸지**는 사용자가 고칠 수 있는 `report-format.md`가 정한다. 같은 것을 둘이 말하면 구조 > 사용자 규칙 > 수집한 근거 순으로 따른다.
 - 일반 설정은 `config.json`에서 읽고, 인증 정보는 `pms/secrets.dat`(이 계정에서만 풀리는 암호문)에서 읽는다. 금고가 사실의 원본이며 `config.json`에 평문을 남기지 않는다. 보고서나 로그에도 비밀값을 기록하지 않는다.
 
 ## 모듈 지도
@@ -153,16 +154,18 @@ PowerShell 진입점
 ```text
 skill/                       # 설치물. 업데이트가 통째로 교체한다
 ├─ prompts/ask.json          # 대화형 질문 정의
-├─ templates/                # 기본 보고서 양식·문체·예시
+├─ templates/                # 기본 보고서 양식·문체, 제출문 모양(고정)
 ├─ assets/                   # 글꼴과 아이콘
 └─ scripts/                  # PowerShell 진입점, Python 구현, 정적 페이지 자산
    └─ messages.json          # 사용자 메시지
 
 <보고 폴더>                   # 사용자의 것. 업데이트가 건드리지 않는다
 ├─ config.json               # 일반 설정
-├─ custom/                   # 사용자가 고친 양식·문체·예시
+├─ custom/                   # 사용자가 고친 양식·문체
 ├─ daily/ weekly/ log/ raw/  # 산출물 (월 폴더 아래)
 ├─ runlog/                   # 실행 기록과 오류 기록
+├─ pms/patterns.md           # 지난 제출문을 센 값 (숫자)
+├─ pms/my-submissions.md     # 지난 제출문 원문 (끝맺는 말·어휘)
 └─ pms/secrets.dat           # 인증 정보 금고; 버전 관리 대상 아님
 ```
 

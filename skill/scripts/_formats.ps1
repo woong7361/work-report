@@ -46,39 +46,21 @@ function Get-FormatFile {
 }
 
 function Get-SampleFile {
-    # Past reports pasted by the user, used as a style example. Unlike the
-    # format and rules files this one has no default to fall back to: the
-    # template is a guide, and following it would teach the guide's voice.
-    # So it counts only once enough text sits below the paste marker to read
-    # a way of writing from.
+    # Past submissions harvested from PMS, used for wording and sentence endings.
+    # The tool writes the whole file and overwrites it on every fetch, so it sits
+    # next to patterns.md rather than in the user's custom folder. There is no
+    # shipped default: a template's own voice is not the person's voice, so when
+    # nothing has been harvested the report falls back to the format file's rules.
     param(
         [Parameter(Mandatory = $true)][string]$Root,
         $Config,
         [string]$Flag = 'custom_samples'
     )
     if (-not ($Config -and $Config.$Flag)) { return $null }
-
-    $name = 'my-reports.md'
-    $custom = Join-Path (Join-Path $Root 'custom') $name
-    if (-not (Test-Path $custom)) {
-        $template = Join-Path (Join-Path (Get-SkillRoot) 'templates') $name
-        if (-not (Test-Path $template)) { return $null }
-        $folder = Split-Path -Parent $custom
-        if (-not (Test-Path $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
-        try { Copy-Item $template $custom } catch { return $null }
-        return $null     # freshly seeded: nothing is pasted yet
-    }
-    # The same encoding collect.py reads it with, so both sides count the
-    # same characters rather than one of them counting mojibake.
-    try { $body = Get-Content $custom -Raw -Encoding utf8 -ErrorAction Stop }
+    $path = Join-Path $Root 'pms\my-submissions.md'
+    if (-not (Test-Path $path)) { return $null }
+    try { $body = Get-Content $path -Raw -Encoding utf8 -ErrorAction Stop }
     catch { return $null }
-
-    # Only what sits below the marker is the example: the guide above it
-    # clears any length floor on its own.
-    $mark = '<!-- PASTE BELOW -->'
-    $at = $body.LastIndexOf($mark)
-    if ($at -ge 0) { $body = $body.Substring($at + $mark.Length) }
     if (($body -replace '\s', '').Length -lt $script:MinCustomChars) { return $null }
-    return $custom
+    return $path
 }
-

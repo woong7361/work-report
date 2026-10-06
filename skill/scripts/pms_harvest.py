@@ -44,9 +44,6 @@ URL_MONTH = '%s/projects/%s/daily_reports?month=%d&year=%d&view_type=monthly'
 
 NL = chr(10)          # 패치 도구가 역슬래시를 먹는 일이 있어 상수로 둔다
 
-MARK_BEGIN = '<!-- work-report:pms begin -->'
-MARK_END = '<!-- work-report:pms end -->'
-PASTE_MARK = '<!-- PASTE BELOW -->'
 
 
 def months_back(n):
@@ -89,30 +86,27 @@ def as_text(report):
 
 
 def write_samples(root, reports, keep):
-    """custom/my-reports.md 의 표시선 아래에 최근 것들을 넣는다.
+    """pms/my-submissions.md 에 최근 제출문을 적는다.
 
-    손으로 붙여넣은 것을 지우지 않으려고 우리 영역을 따로 표시해 둔다.
-    그 바깥은 건드리지 않는다.
+    도구가 통째로 쓰고 통째로 덮는 파일이다. 사람이 손대는 자리가 아니므로
+    표시선도 안내문도 두지 않는다 - 화면에는 설정의 토글만 나온다.
+    `patterns.md` 와 같은 자리에 둔다. 둘 다 수집이 만드는 근거다.
     """
-    path = os.path.join(root, 'custom', 'my-reports.md')
-    if not os.path.isfile(path):
+    if not reports:
         return None
-    body = io.open(path, encoding='utf-8-sig').read()
-    # 보고서 사이는 --- 로 나눈다. 안내문이 사람에게 시키는 규칙과 같은 모양이어야
-    # 손으로 넣은 것과 받아온 것이 한 파일에서 같게 읽힌다.
-    joined = (NL + '---' + NL).join(as_text(r) for r in reports[:keep])
-    block = NL.join([MARK_BEGIN,
-                        '<!-- PMS에서 받아온 내 지난 제출문이다. 손으로 고치지 마라 - 다음 수집이 덮는다. -->',
-                        '', joined, MARK_END, ''])
-    if MARK_BEGIN in body and MARK_END in body:
-        head, rest = body.split(MARK_BEGIN, 1)
-        _old, tail = rest.split(MARK_END, 1)
-        body = head + block + tail
-    elif PASTE_MARK in body:
-        head, tail = body.split(PASTE_MARK, 1)
-        body = head + PASTE_MARK + NL + NL + block + tail
-    else:
-        body = body.rstrip() + NL + NL + block
+    folder = os.path.join(root, 'pms')
+    if not os.path.isdir(folder):
+        os.makedirs(folder)
+    path = os.path.join(folder, 'my-submissions.md')
+    body = NL.join([
+        '# 내가 쓰던 제출문',
+        '',
+        'PMS에서 받아온 내 지난 제출문 %d건이다. 끝맺는 말과 쓰는 어휘를 여기서 따른다.' % len(reports[:keep]),
+        '분량과 분류 분포는 `patterns.md`, 구조는 제출문 모양 파일이 정한다.',
+        '',
+        (NL + '---' + NL).join(as_text(r) for r in reports[:keep]),
+        '',
+    ])
     io.open(path, 'w', encoding='utf-8', newline='').write(body)
     return path
 
@@ -137,9 +131,9 @@ def summarize(reports):
         if ids:
             with_issues += 1
             issue_count += len(ids)
-    # 본문은 세지 않는다. 문체 예시는 custom/my-reports.md 가 전담한다 -
-    # 그쪽에만 토글과 길이 검증이 걸려 있어서, 여기 본문을 함께 담으면
-    # "지난 제출문 따라하기"를 꺼도 지난 보고서 글이 에이전트에게 간다.
+    # 본문은 세지 않는다. 여기는 숫자만 담고 토글이 없으므로, 본문을 함께 담으면
+    # "내가 쓰던 대로 쓰기"를 꺼도 지난 제출문 글이 에이전트에게 간다.
+    # 끝맺는 말과 어휘는 my-submissions.md 가 전담한다.
     return {'reports': len(reports), 'categories': cats, 'rows_per_report': rows,
             'reports_with_issues': with_issues, 'issue_links': issue_count}
 
@@ -220,7 +214,7 @@ def do_fetch(pms, root, months, keep):
         if sample:
             print('문체 예시   : %s (최근 %d건)' % (sample, min(keep, len(mine))))
         else:
-            print('문체 예시   : custom/my-reports.md 가 없다. 설정에서 "지난 제출문 따라하기"를 켜면 생긴다')
+            print('문체 예시   : 받아온 제출문이 없다')
         return 0
     finally:
         browser.close()

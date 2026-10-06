@@ -15,22 +15,9 @@ import re
 CUSTOM_FILES = (
     ('report-format.md', '보고서 양식', 'custom_format'),
     ('writing-rules.md', '글쓰기 문체', 'custom_rules'),
-    ('my-reports.md', '지난 제출문', 'custom_samples'),
 )
 CUSTOM_MAX = 8 * 1024       # 이보다 크면 양식이 아니라 다른 글이다
 CUSTOM_MIN = 40             # 제목만 남기고 지운 파일을 양식으로 쓰면 보고서가 빈다
-
-# 지난 보고서를 쌓아 두는 파일은 규칙이 아니라 예시 더미라 훨씬 커진다.
-SAMPLE_FILE = 'my-reports.md'
-SAMPLE_MAX = 64 * 1024
-# 표시선 아래가 붙여넣는 자리다. 안내문만 있고 그 아래가 비었으면 아직 넣지
-# 않은 것이다. 이때 안내문을 예시로 삼으면 안내문의 문체를 배우게 된다.
-SAMPLE_MARK = '<!-- PASTE BELOW -->'
-# 여기서 쓰이지 않는 예시는 러너도 넘기지 않아야 한다. 한쪽만 통과하면 수집
-# 결과에는 쓰였다고 적히는데 보고서엔 그 절이 없는, 설명할 수 없는 상태가 된다.
-# 러너 쪽 기준은 _env.ps1 의 Get-SampleFile 에 있다.
-SAMPLE_MIN = CUSTOM_MIN
-
 
 def read_text(path, cap=CUSTOM_MAX):
     """사용자가 메모장으로 저장해도 읽히게 한다. 실패하면 이유를 준다."""
@@ -55,16 +42,6 @@ def read_text(path, cap=CUSTOM_MAX):
     return None, '글자 인코딩을 알 수 없다 (UTF-8로 저장해 보라)'
 
 
-def sample_body(text):
-    """표시선 아래에 붙여넣은 부분만 돌려준다.
-
-    표시선을 지우고 보고서만 남긴 파일도 받는다. 그때는 전체가 붙여넣은 것이다.
-    """
-    if SAMPLE_MARK not in text:
-        return text.strip()
-    return text.rsplit(SAMPLE_MARK, 1)[1].strip()
-
-
 def headings(text):
     """문서의 절 제목만 뽑는다."""
     return [m.group(2).strip() for m in re.finditer(r'(?m)^(#{1,3})\s+(.+)$', text or '')]
@@ -75,10 +52,7 @@ def stale_sections(name, text):
 
     토글을 켜면 그 사본은 그 시점에 멈춘다. 나중에 기본 양식에 절이 생겨도
     따라오지 않고, 그 절이 필요하다는 사실조차 알 수 없다. 그래서 센다.
-    예시 더미 파일은 따라야 할 지침이 아니라 내 글을 담는 그릇이므로 뺀다.
     """
-    if name == SAMPLE_FILE:
-        return []
     template = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'templates', name)
     try:
         with open(os.path.normpath(template), encoding='utf-8') as fh:
@@ -107,15 +81,7 @@ def scan_custom(root, cfg):
             out.append({'name': name, 'label': label, 'mine': True, 'used': False,
                         'why': '파일이 없다 (다음 실행이 기본값으로 다시 만든다)'})
             continue
-        text, why = read_text(path, SAMPLE_MAX if name == SAMPLE_FILE else CUSTOM_MAX)
-        if text is not None and name == SAMPLE_FILE:
-            # 파일 전체는 안내문만으로도 분량을 넘기므로 표시선 아래만 센다.
-            pasted = ''.join(sample_body(text).split())
-            if not pasted:
-                text, why = None, '붙여넣은 보고서가 없다 (안내문만 있다)'
-            elif len(pasted) < SAMPLE_MIN:
-                text, why = None, ('붙여넣은 보고서가 너무 짧다 (글자 %d개, 최소 %d개)'
-                                   % (len(pasted), SAMPLE_MIN))
+        text, why = read_text(path)
         out.append({'name': name, 'label': label, 'mine': True,
                     'used': text is not None, 'why': why,
                     'path': os.path.join('custom', name),

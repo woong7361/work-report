@@ -102,24 +102,31 @@ class RefactorAcceptance(unittest.TestCase):
         self.assertIn('#12 Fixture task (Open', text)
         self.assertIn('Tester', text)
 
-    def test_harvest_keeps_user_text_and_counts_reports(self):
-        """Fetching examples replaces only its marked region, preserving manual text."""
+    def test_harvest_writes_submissions_and_counts_reports(self):
+        """Harvest writes wording examples beside the stats, and counts only numbers."""
         reports = [{'date': '2026-10-01', 'issues': ['12'], 'secs': [
-            {'head': '한 일', 'groups': [{'badge': '개발', 'text': 'Fixture\n- task'}]}]}]
-        self.write('custom/my-reports.md', 'Manual before\n<!-- PASTE BELOW -->\nManual after\n')
+            {'head': '한 일', 'groups': [{'badge': '개발', 'text': 'Fixture' + chr(10) + '- task'}]}]}]
         path = pms_harvest.write_samples(str(self.root), reports, 1)
-        first = Path(path).read_text(encoding='utf-8')
+        self.assertTrue(path.endswith('my-submissions.md'), path)
+        body = Path(path).read_text(encoding='utf-8')
+        # 제출문과 같은 모양이어야 한다: 날짜는 주석, 일감은 맨 끝
+        self.assertIn('<!-- 2026-10-01 -->', body)
+        self.assertIn('(개발)', body)
+        self.assertIn('연결된 일감: #12', body)
+        # 다시 받아도 한 벌만 남는다 (도구가 통째로 덮는다)
         pms_harvest.write_samples(str(self.root), reports, 1)
-        second = Path(path).read_text(encoding='utf-8')
-        self.assertIn('Manual before', second)
-        self.assertIn('Manual after', second)
-        self.assertEqual(first.count('<!-- 2026-10-01 -->'), 1)
-        self.assertEqual(second.count('<!-- 2026-10-01 -->'), 1)
+        again = Path(path).read_text(encoding='utf-8')
+        self.assertEqual(again.count('<!-- 2026-10-01 -->'), 1)
+
         stat = pms_harvest.summarize(reports)
         self.assertEqual(stat['categories'], {'개발': 1})
         self.assertEqual(stat['rows_per_report'], {1: 1})
         self.assertEqual(stat['issue_links'], 1)
-        self.assertTrue(Path(pms_harvest.write_patterns(str(self.root), reports, stat)).is_file())
+        self.assertNotIn('examples', stat)
+        # 통계 파일에는 본문이 들어가지 않는다 - 토글 없이 항상 전달되는 파일이다
+        patterns = Path(pms_harvest.write_patterns(str(self.root), reports, stat))
+        self.assertTrue(patterns.is_file())
+        self.assertNotIn('Fixture', patterns.read_text(encoding='utf-8'))
 
     def test_pms_fill_appends_without_saving(self):
         """Existing form row stays; category/content/issue are added; no save is clicked."""

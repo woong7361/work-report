@@ -20,11 +20,10 @@ const FIELDS = [
     file:'custom/report-format.md', hint:'보고서 양식을 통째로 바꾼다' },
   { k:'custom_rules',   t:'bool', def:false, label:'내 글쓰기 문체 쓰기',
     file:'custom/writing-rules.md', hint:'기본 원칙 뒤에 덧붙인다' },
-  { k:'custom_samples', t:'bool', def:false, label:'지난 제출문 따라하기',
-    file:'custom/my-reports.md',
-    hint:'붙여넣은 지난 보고서를 문체 예시로 쓴다.' +
-         '\n보고서 맨 앞에 그 문체로 쓴 제출문 절이 생긴다.' +
-         '\n붙여넣은 것이 없으면 아무 일도 하지 않는다' },
+  { k:'custom_samples', t:'bool', def:false, label:'내가 쓰던 대로 쓰기',
+    hint:'PMS에서 받아온 내 지난 제출문의 끝맺는 말과 어휘를 따른다.' +
+         '\n모양과 분량은 보고서 양식이 정하므로 바뀌지 않는다.' +
+         '\n받아온 것이 없으면 아무 일도 하지 않는다 (위 "지난 제출문 가져오기")' },
 
   { h:'수집' },
   { k:'mine_only', t:'bool', def:true, label:'내 이메일의 커밋만' },

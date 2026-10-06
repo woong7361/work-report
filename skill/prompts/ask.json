@@ -6,8 +6,8 @@
   "files": {
     "report_format": "Report format: \"{path}\".",
     "writing_rules": "Writing rules: \"{path}\".",
-    "submission": "Write the submission section; it goes into the PMS daily report form.",
-    "samples": "My past submissions (style examples only, never a source of content): \"{path}\".",
+    "submission": "Write the submission section; it goes into the PMS daily report form. Its shape: \"{path}\".",
+    "samples": "How I word them (endings and vocabulary only, never a source of content): \"{path}\".",
     "issues": "Issues I can link: \"{path}\".",
     "patterns": "How I have filled it before (counted, not rules): \"{path}\"."
   },
