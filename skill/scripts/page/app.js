@@ -275,6 +275,24 @@ function drawRel(){
   }
   bar.hidden = false;
 }
+// PMS를 쓰는데 일일보고에 제출문 절이 없으면 폼을 채울 것이 없다. 절을 찾는 단서는
+// 절 제목이라, 양식에서 제목을 고치면 절이 있어도 없는 것으로 보인다. 검사기는
+// "절이 없는 것은 잘못이 아니다"로 통과시키므로(만들지 않아도 되는 사람이 있다)
+// 그 사실을 아는 곳은 화면뿐이다. 프롬프트로 보내지 않는다 - 사람이 고칠 일이다.
+function drawNotice(){
+  const box = $('notice');
+  const pmsReady = conf && conf.pms ? !!conf.pms.url : PMS_ON;
+  const show = view === 'doc' && !editing && !!current
+               && areaOf(current) === 'daily' && pmsReady && !toCopy().part;
+  if (!show) { box.hidden = true; box.textContent = ''; return; }
+  box.textContent = '';
+  box.appendChild(el('span', '',
+    '이 보고서에는 제출문 절이 없습니다. PMS에 채우면 폼만 열립니다. '));
+  box.appendChild(el('span', '',
+    '절 제목은 "## 0. 제출문" 이어야 합니다 - 보고서 양식에서 이 제목을 바꿨다면 되돌려 주세요.'));
+  box.hidden = false;
+}
+
 function layout(){
   const isDoc = view === 'doc', isReadme = view === 'readme', isSetup = view === 'setup';
   const area = areaOf(current);
@@ -321,6 +339,7 @@ function layout(){
   $('tabSetup').classList.toggle('on', view === 'setup');
   markCurrent();
   drawRel();
+  drawNotice();
 }
 function paint(){
   if (view === 'setup') { setHead('시작하기', '지금 무엇이 되어 있는지'); drawSetup(); }
