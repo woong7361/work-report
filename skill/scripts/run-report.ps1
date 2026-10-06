@@ -107,14 +107,7 @@ function Invoke-Report {
     $fmt = Get-FormatFile -Name 'report-format.md' -Root $root -Config $cfg -Flag 'custom_format'
     $rules = Get-FormatFile -Name 'writing-rules.md' -Root $root -Config $cfg -Flag 'custom_rules'
     $samples = Get-SampleFile -Root $root -Config $cfg
-    # A default nobody edited must not outrank the examples the person turned on.
-    # Get-FormatFile hands back the shipped template when the toggle is off, so the
-    # path itself says which case this is. The agent is told which, not left to guess.
-    $fmtDefault = Join-Path (Join-Path (Get-SkillRoot) 'templates') 'report-format.md'
-    if ($fmt) {
-        $key = if ($fmt -eq $fmtDefault) { 'report_format' } else { 'report_format_mine' }
-        $ask += ' ' + ([string]$prompts.files.$key).Replace('{path}', $fmt)
-    }
+    if ($fmt) { $ask += ' ' + ([string]$prompts.files.report_format).Replace('{path}', $fmt) }
     if ($rules) { $ask += ' ' + ([string]$prompts.files.writing_rules).Replace('{path}', $rules) }
     if ($submitting) {
         # The shape is the tool's: the form defines it, so it is never the custom copy.

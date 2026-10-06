@@ -4,8 +4,7 @@
     "weekly": "weekly work report covering {from} to {to}. Reuse the daily work logs in log/ and collect only the missing days. Print the saved paths."
   },
   "files": {
-    "report_format": "Report format - this is the shipped default, so past-submission examples (when given) outrank its submission shape and wording: \"{path}\".",
-    "report_format_mine": "Report format - this one is mine, so it outranks the past-submission examples: \"{path}\".",
+    "report_format": "Report format: \"{path}\".",
     "writing_rules": "Writing rules: \"{path}\".",
     "submission": "Write the submission section; it goes into the PMS daily report form. Its shape: \"{path}\".",
     "samples": "How I word them (endings and vocabulary only, never a source of content): \"{path}\".",
