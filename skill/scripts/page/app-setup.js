@@ -205,7 +205,7 @@ function toCopy(){
   const isHead = s => /^##\s/.test(s);
   let start = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (isHead(lines[i]) && lines[i].indexOf(SUBMIT_HEAD) >= 0) { start = i + 1; break; }
+    if (isHead(lines[i]) && isSubmitHead(lines[i].replace(/^#+\s*/, ''))) { start = i + 1; break; }
   }
   if (start < 0) return { body: lines.join('\n'), part: false };
   let end = lines.length;

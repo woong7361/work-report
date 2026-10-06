@@ -9,8 +9,11 @@ const PMS_ON = {{PMS_ON}};
 const AREA_NAME = { daily:'일일 보고', weekly:'주간 보고', log:'한 일 목록', raw:'수집 원본' };
 const AREA_TAG  = { daily:'일일', weekly:'주간', log:'한 일', raw:'원본' };
 const CUSTOM_NAME = { 'report-format.md':'보고서 양식', 'writing-rules.md':'글쓰기 문체' };
-// 제출문 절은 붙여넣기용이라 보고서 전체가 아니라 그 절만 클립보드에 담는다
+// 제출문 절은 붙여넣기용이라 보고서 전체가 아니라 그 절만 클립보드에 담는다.
+// 앞의 번호(`0. `)는 양식이 붙이는 것이라 떼고 본다. 화면에 원문으로 보여 주는
+// 판단과 복사하는 판단이 같은 절을 가리켜야 하므로 한 곳에서만 정한다.
 const SUBMIT_HEAD = '제출문';
+const isSubmitHead = t => String(t).replace(/^[\d.\s]+/, '').trim() === SUBMIT_HEAD;
 // 보고서를 쓸 때 근거로 들춰 보는 것들이다. 매번 펼쳐져 있으면 목록만 길어진다
 const FOLDED = ['log', 'raw'];
 const WD = ['일','월','화','수','목','금','토'];
@@ -87,6 +90,22 @@ function render(md, cells){
       i++; continue;
     }
     if (/^\s*```/.test(ln)) { closeAll(); out.push('<pre class="code"><code>'); fence = []; i++; continue; }
+
+    // 제출문 절은 붙여넣어 그대로 내는 글이다. 마크다운으로 해석하면 화면과
+    // 올라갈 글이 달라진다 - 분류 줄과 주제 줄이 한 문단으로 붙고 "- "가
+    // 목록 기호로 먹힌다. 그러면 사람이 화면을 보고 틀린 것을 믿는다.
+    // 제목이 번호를 뺀 뒤 정확히 "제출문"인 절만 본다. 양식 파일의
+    // "제출문 절에 무엇을 쓰나"처럼 설명하는 절까지 원문으로 두면 읽기 어렵다.
+    const head = ln.match(/^(#{1,4})\s+(.*)$/);
+    if (head && head[1].length <= 2 && isSubmitHead(head[2])) {
+      closeAll();
+      out.push('<h' + head[1].length + '>' + inline(head[2]) + '</h' + head[1].length + '>');
+      const kept = [];
+      i++;
+      while (i < lines.length && !/^#{1,2}\s/.test(lines[i])) { kept.push(lines[i]); i++; }
+      out.push('<pre class="submit">' + esc(kept.join('\n').replace(/^\s*\n|\s+$/g, '')) + '</pre>');
+      continue;
+    }
 
     const isTable = /^\s*\|/.test(ln) && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i+1] || '');
     if (isTable) {
