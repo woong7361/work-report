@@ -352,15 +352,17 @@ nav.side.hide { display:none; }
 .rel a.missing { color:var(--faint); border-style:dashed; cursor:default; }
 
 /* 화면에서만 알려 주는 말. 프롬프트로 가지 않는다 - 사람이 고쳐야 하는 것이다.
-   면은 다른 카드와 같은 따뜻한 중간색을 쓰고, 왼쪽 띠로만 성격을 가른다.
-   강조색은 차가운 파랑이라 이 종이 색과 겉돈다. */
-.notice { flex:0 0 auto; margin:0 var(--sp-5) var(--sp-2); padding:var(--sp-2) var(--sp-3);
-          border:1px solid var(--line); border-left:3px solid var(--warn);
-          border-radius:var(--r-sm); background:var(--soft);
+   카드와 같은 방식으로 띄운다: 바탕보다 밝은 면에 테두리. 바탕과 면이 비슷하면
+   알림이 아니라 배경처럼 읽힌다. 성격은 왼쪽 띠로 가른다.
+   강조색(파랑)은 쓰지 않는다 - 이 종이 색과 계열이 다르다. */
+.notice { flex:0 0 auto; margin:0 var(--sp-5) var(--sp-2); padding:var(--sp-3) var(--sp-4);
+          background:var(--panel); border:1px solid var(--line);
+          border-left:3px solid var(--warn); border-radius:var(--r-md);
+          box-shadow:var(--shadow-1);
           font-size:var(--fs-200); line-height:var(--lh-body); color:var(--ink); }
-/* 경고가 아니라 안내. 띠에서 색을 빼고 글씨를 한 단 낮춘다 */
-.notice.info { border-left-color:var(--faint); color:var(--muted); }
-.notice div + div { margin-top:2px; }
+/* 경고가 아니라 안내. 띠만 바꾼다 - 글씨를 흐리면 읽히지 않는다 */
+.notice.info { border-left-color:var(--solid); }
+.notice div + div { margin-top:3px; }
 
 /* 스크롤은 여기 한 곳에서만 일어난다 */
 .sheet { flex:1 1 auto; overflow-y:auto; }
